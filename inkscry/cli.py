@@ -14,8 +14,10 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from . import ble, monitor, quota, renderer
@@ -94,6 +96,25 @@ def build_state(event: str, message: str, hook: dict,
     return state
 
 
+# 防抖：这些事件关乎用户响应，不受最小间隔限制；其余事件（stop 等）限频
+_PRIORITY_EVENTS = {"notification", "permission", "error", "test"}
+
+
+def _throttled(event: str) -> int:
+    """距上次推送不足 INKSCRY_PUSH_INTERVAL 秒（默认 60）时返回剩余秒数，否则 0。"""
+    if event in _PRIORITY_EVENTS:
+        return 0
+    try:
+        interval = int(os.environ.get("INKSCRY_PUSH_INTERVAL", "60"))
+    except ValueError:
+        interval = 60
+    try:
+        last = float((quota.CACHE_DIR / "last_push").read_text().strip())
+    except (OSError, ValueError):
+        return 0
+    return max(0, int(interval - (time.time() - last)))
+
+
 async def run(args: argparse.Namespace) -> int:
     if args.clear or args.sleep:
         async with ble.EPDClient(address=args.address) as epd:
@@ -104,6 +125,14 @@ async def run(args: argparse.Namespace) -> int:
                 await epd.sleep()
                 log.info("休眠指令已发送")
         return 0
+
+    # 防抖提前：跳过就不必查额度/渲染（--no-ble 调试与 --demo 不受限）
+    if not args.demo and not args.no_ble:
+        skip = _throttled(args.event)
+        if skip:
+            log.info("防抖：距上次推送还剩 %ds，跳过 %s（不影响钩子主流程）",
+                     skip, args.event)
+            return 0
 
     if args.demo:
         state = renderer.demo_state()
@@ -126,6 +155,8 @@ async def run(args: argparse.Namespace) -> int:
 
     async with ble.EPDClient(address=args.address) as epd:
         await epd.push_image(result.black_bytes(), result.red_bytes())
+    quota.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (quota.CACHE_DIR / "last_push").write_text(str(time.time()))
     log.info("推送完成")
     return 0
 
