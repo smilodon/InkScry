@@ -244,8 +244,8 @@ def _draw_quota_panel(d: ImageDraw.ImageDraw, dr: ImageDraw.ImageDraw,
     dr.line([(x0, y0 + TITLE_FONT_SIZE + 3), (x0 + w - 4, y0 + TITLE_FONT_SIZE + 3)], fill=1)
     by = y0 + 26
     if p.balance:
-        # 余额模式与档位块同构三段式：bal+金额行 / 占比条(可选) / 备注行(可选)
-        pct_dx = 34   # "bal" 3 字符比 "5h" 宽，偏移取宽档
+        # 余额模式与档位块同构三段式：余额+金额行 / 占比条(可选) / 备注行(可选)
+        pct_dx = 34   # 容纳「余额」CJK16（27px）并留间隙
         for size in (20, 16):
             f_bal = _load_font(size)
             if d.textlength(p.balance, font=f_bal) <= w - pct_dx - 6:
@@ -254,7 +254,7 @@ def _draw_quota_panel(d: ImageDraw.ImageDraw, dr: ImageDraw.ImageDraw,
         if CENTER_CONTENT:
             group_w = pct_dx + d.textlength(p.balance, font=f_bal)
             ax = x0 + max(0, int((w - group_w) / 2)) + pct_dx
-        d.text((ax - pct_dx, by), "bal", font=f_sm, fill=0)
+        d.text((ax - pct_dx, by), "余额", font=_load_font(16, cjk=True), fill=0)
         d.text((ax, ay), p.balance, font=f_bal, fill=0)
         if p.alert:
             dr.text((ax, ay), p.balance, font=f_bal, fill=1)
