@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+# 打包构建产物
+*.egg-info/
+build/
+dist/
+# 真实凭据只在本地 .env（公开模板见 .env.example）
+.env
+# Claude Code 个人权限配置，机器相关
+.claude/settings.local.json
+# 本地渲染预览产物
+*.bmp
+*_preview.png
