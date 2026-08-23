@@ -11,6 +11,9 @@
 - 配置：`INKSCRY_SYNC_INTERVAL`（默认 900s）/ `INKSCRY_QUIET`（静默时段）/
   `INKSCRY_HEARTBEAT`（超时强制推，默认关）。hook 推送优先，sync 自动让路；
   底栏状态无 hook 时按会话日志 mtime 推断。
+- 比对同样作用于 hook 路径（2026-08-23）：普通事件过防抖后数据没变也跳过；
+  签名含顶部告警横幅（waiting/error 必须参与，防过期告警滞留）；镜像文件
+  跟随每一次成功推送（含 --demo），清屏（CLI 与菜单栏）作废镜像。
 
 ## P3 — 刷新防抖
 

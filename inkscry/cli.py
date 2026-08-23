@@ -133,24 +133,46 @@ def _infer_status() -> str:
     return "idle"
 
 
-def _state_signature(state: renderer.DashboardState) -> list[dict]:
-    """额度面板的屏显签名：只收会画到屏上的值，并按屏显精度取整。
+def _state_signature(state: renderer.DashboardState) -> dict:
+    """屏显签名：只收会画到屏上的实质内容，并按屏显精度取整。
 
-    底栏时间戳、事件状态字不参与比对——只有额度数据变化才触发全刷，
+    banner 是顶部红色告警横幅（等待确认/出错），必须参与比对——
+    否则横幅上屏后一次「数据没变」的跳过会把过期告警永远留在屏上。
+    底栏时间戳、状态字不参与——只有实质内容变化才触发全刷，
     状态字的更新搭数据变化的便车。
     """
-    return [{
-        "label": p.label,
-        "five": None if p.five_pct is None else f"{p.five_pct:.0f}",
-        "five_reset": p.five_reset,
-        "week": None if p.week_pct is None else f"{p.week_pct:.0f}",
-        "week_reset": p.week_reset,
-        "balance": p.balance,
-        "alert": p.alert,
-        "stale": p.stale,
-        "bar": None if p.bar_pct is None else f"{p.bar_pct:.0f}",
-        "detail": p.detail,
-    } for p in state.quota_panels]
+    return {
+        "banner": state.status if state.status in ("waiting", "error") else "",
+        "panels": [{
+            "label": p.label,
+            "five": None if p.five_pct is None else f"{p.five_pct:.0f}",
+            "five_reset": p.five_reset,
+            "week": None if p.week_pct is None else f"{p.week_pct:.0f}",
+            "week_reset": p.week_reset,
+            "balance": p.balance,
+            "alert": p.alert,
+            "stale": p.stale,
+            "bar": None if p.bar_pct is None else f"{p.bar_pct:.0f}",
+            "detail": p.detail,
+        } for p in state.quota_panels],
+    }
+
+
+def _last_sig_file() -> Path:
+    return quota.CACHE_DIR / "last_pushed_state.json"
+
+
+def _load_last_sig() -> dict | None:
+    """读「屏上内容镜像」：上一次成功推送时的屏显签名。"""
+    try:
+        return json.loads(_last_sig_file().read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _save_last_sig(sig: dict) -> None:
+    quota.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _last_sig_file().write_text(json.dumps(sig, ensure_ascii=False))
 
 
 def _heartbeat_due() -> bool:
@@ -187,7 +209,7 @@ def _in_quiet(hour: int) -> bool:
 
 async def sync_once(address: str | None = None, save: str | None = None,
                     no_ble: bool = False, force: bool = False
-                    ) -> tuple[str, list[dict]]:
+                    ) -> tuple[str, dict]:
     """同步一轮：查额度 → 与上次已推画面比对 → 有变化才连 BLE 推送。
 
     force（菜单栏「立即刷新」）跳过防抖与比对，必推。
@@ -198,16 +220,11 @@ async def sync_once(address: str | None = None, save: str | None = None,
         if skip:
             msg = f"{skip}s 内已有推送，本轮让路"
             log.info("同步：%s", msg)
-            return msg, []
+            return msg, {}
     state = build_state("sync", "", {})
     state.status = _infer_status()
     sig = _state_signature(state)
-    state_file = quota.CACHE_DIR / "last_pushed_state.json"
-    try:
-        old = json.loads(state_file.read_text())
-    except (OSError, ValueError):
-        old = None
-    changed = sig != old
+    changed = sig != _load_last_sig()
     if not force and not changed and not _heartbeat_due():
         msg = "数据无变化，未刷屏"
         log.info("同步：%s", msg)
@@ -225,7 +242,7 @@ async def sync_once(address: str | None = None, save: str | None = None,
         await epd.push_image(result.black_bytes(), result.red_bytes())
     quota.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     (quota.CACHE_DIR / "last_push").write_text(str(time.time()))
-    state_file.write_text(json.dumps(sig, ensure_ascii=False))
+    _save_last_sig(sig)
     msg = f"{reason}，已推送"
     log.info("同步：%s", msg)
     return msg, sig
@@ -258,6 +275,8 @@ async def run(args: argparse.Namespace) -> int:
         async with ble.EPDClient(address=args.address) as epd:
             if args.clear:
                 await epd.clear()
+                # 屏已空，作废屏上内容镜像：下次比对必判定有变化
+                _last_sig_file().unlink(missing_ok=True)
                 log.info("清屏指令已发送")
             else:
                 await epd.sleep()
@@ -278,6 +297,12 @@ async def run(args: argparse.Namespace) -> int:
         hook = read_hook_stdin()
         state = build_state(args.event, args.message or "", hook,
                             with_quota=not args.no_quota)
+        # 普通事件（Stop 等）：数据与告警横幅都和屏上一致就不值得一次
+        # 全刷（比对口径与 --sync 相同）；等待确认/出错类必推不比
+        if args.event not in _PRIORITY_EVENTS and not args.no_ble:
+            if _state_signature(state) == _load_last_sig():
+                log.info("屏显数据无变化，跳过 %s 刷屏", args.event)
+                return 0
 
     result = renderer.render(state)
     if args.save:
@@ -295,6 +320,7 @@ async def run(args: argparse.Namespace) -> int:
         await epd.push_image(result.black_bytes(), result.red_bytes())
     quota.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     (quota.CACHE_DIR / "last_push").write_text(str(time.time()))
+    _save_last_sig(_state_signature(state))   # 镜像跟随每一次成功推送
     log.info("推送完成")
     return 0
 

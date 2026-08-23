@@ -19,7 +19,6 @@ INKSCRY_QUIET / INKSCRY_HEARTBEAT。
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import subprocess
@@ -99,13 +98,12 @@ class InkScryBar(rumps.App if rumps else object):
         self.paused = False
         self._busy = threading.Lock()
         # (消息, 签名|None, 出错?, 附加动作|None)，工作线程写、主线程消费
-        self._pending: tuple[str, list[dict] | None, bool, str | None] | None = None
+        self._pending: tuple[str, dict | None, bool, str | None] | None = None
         # 启动即从「屏上内容镜像」恢复面板行，不必等第一轮同步
-        try:
-            self._last_sig = json.loads(
-                (quota.CACHE_DIR / "last_pushed_state.json").read_text())
-        except (OSError, ValueError):
-            self._last_sig = []
+        data = cli._load_last_sig()
+        if isinstance(data, list):   # 兼容旧格式（纯面板列表）
+            data = {"panels": data}
+        self._last_sig: dict = data if isinstance(data, dict) else {}
         self._rebuild("启动中…")
 
         self._sync_timer: rumps.Timer | None = None
@@ -191,10 +189,7 @@ class InkScryBar(rumps.App if rumps else object):
         try:
             asyncio.run(self._do_clear())
             # 屏已空，作废「屏上内容镜像」：恢复同步后第一轮必重推
-            try:
-                (quota.CACHE_DIR / "last_pushed_state.json").unlink()
-            except OSError:
-                pass
+            cli._last_sig_file().unlink(missing_ok=True)
             self._pending = (f"{stamp} 已清屏，自动同步已暂停", None, False,
                              "cleared")
         except Exception as e:
@@ -218,15 +213,16 @@ class InkScryBar(rumps.App if rumps else object):
         if extra == "cleared":
             self.paused = True
             self.pause_item.title = "恢复自动同步"
-            self._last_sig = []
+            self._last_sig = {}
         self._rebuild(msg)
         self.title = TITLE_ERROR if error else TITLE
 
     def _rebuild(self, status: str) -> None:
         items: list = [rumps.MenuItem(status)]
-        if self._last_sig:
+        panels = self._last_sig.get("panels") if self._last_sig else None
+        if panels:
             items.append(None)
-            for p in self._last_sig:
+            for p in panels:
                 items.append(rumps.MenuItem(_panel_line(p)))
         items += [None, self.refresh_item, self.pause_item,
                   None, self.interval_menu, self.screen_menu, self.config_menu,
