@@ -41,6 +41,7 @@ Claude Code ──hooks──> inkscry.cli ──> renderer (PIL, 400x300 双平
 ```bash
 pip install .                     # 装成 inkscry 命令（下文 python -m inkscry.cli 均可换用 inkscry）
 pip install '.[menubar]'          # 可选：macOS 菜单栏程序 inkscry-bar（rumps）
+pip install '.[tray]'             # 可选：Windows/Linux 托盘程序 inkscry-tray（pystray）
 # 或只装依赖跑源码：pip install -r requirements.txt
 ```
 
@@ -197,6 +198,11 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
   暂停）、配置（编辑 .env… / 重载配置——改面板顺序、标签、token
   后点一下即生效，无需重启）。开机自启：系统设置 → 通用 → 登录项
   添加它即可。
+- **Windows / Linux 托盘程序**：`pip install '.[tray]'` 后运行
+  `inkscry-tray`（pystray）。功能与菜单栏版对齐：托盘图标是 Pillow
+  渲染的「墨」字（白字黑描边，同步中变灰、失败变红），右键菜单同样
+  提供面板一览与全部管理项。开机自启：快捷方式放进「启动」文件夹
+  （`shell:startup`）。BLE 部分 Windows 尚未真机实测。
 - **常驻命令行**：`inkscry --watch`（跨平台，适合 tmux / 服务器）
 - **单次检查**：`inkscry --sync`，配合 launchd / Windows 任务计划 /
   systemd timer 自定节奏
@@ -234,6 +240,7 @@ Linux Noto CJK——均不受 `fonts/` 目录影响。面板正文（百分比�
 | `inkscry/config.py` | .env 配置加载 |
 | `inkscry/cli.py` | hook 事件入口 + 设备指令 + 定时同步（--sync/--watch） |
 | `inkscry/menubar.py` | macOS 菜单栏常驻程序（rumps，可选依赖） |
+| `inkscry/tray.py` | Windows/Linux 系统托盘常驻程序（pystray，可选依赖） |
 
 ## 路线图
 

@@ -175,6 +175,39 @@ def _save_last_sig(sig: dict) -> None:
     _last_sig_file().write_text(json.dumps(sig, ensure_ascii=False))
 
 
+# ── 菜单栏（macOS）/ 托盘（Windows、Linux）共用的展示工具 ──────
+
+INTERVAL_CHOICES = [(300, "5 分钟"), (900, "15 分钟"),
+                    (1800, "30 分钟"), (3600, "1 小时")]
+
+# 每次推送同时落一张预览图，「查看当前画面」直接打开它
+PREVIEW_PNG = quota.CACHE_DIR / "last_push_preview.png"
+
+
+def _env_interval() -> int:
+    try:
+        return max(60, int(os.environ.get("INKSCRY_SYNC_INTERVAL", "900")))
+    except ValueError:
+        return 900
+
+
+def _panel_line(p: dict) -> str:
+    """把一条屏显签名面板（_state_signature 的 panels 元素）排成菜单行。"""
+    parts = []
+    if p.get("balance"):
+        parts.append(p["balance"])
+        if p.get("detail"):
+            parts.append(p["detail"])
+    else:
+        if p.get("five") is not None:
+            parts.append(f"5时 {p['five']}%")
+        if p.get("week") is not None:
+            parts.append(f"1周 {p['week']}%")
+    body = " · ".join(parts) or "--"
+    warn = "⚠ " if p.get("stale") or p.get("alert") else ""
+    return f"{warn}{p['label']}  {body}"
+
+
 def _heartbeat_due() -> bool:
     """INKSCRY_HEARTBEAT（小时，默认 0 关闭）：超时未推则强制刷一次，
     让右下角时间戳保持可信（区分「数据没变」和「同步挂了」）。"""
@@ -250,11 +283,7 @@ async def sync_once(address: str | None = None, save: str | None = None,
 
 async def watch(args: argparse.Namespace) -> int:
     """常驻程序：周期执行 sync_once，异常不退出（设备不在场下轮重试）。"""
-    try:
-        interval = int(os.environ.get("INKSCRY_SYNC_INTERVAL", "900"))
-    except ValueError:
-        interval = 900
-    interval = max(60, interval)
+    interval = _env_interval()
     quiet = os.environ.get("INKSCRY_QUIET", "")
     log.info("常驻同步启动：每 %ds 检查一次%s", interval,
              f"，静默时段 {quiet} 点" if quiet else "")

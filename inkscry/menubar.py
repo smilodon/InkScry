@@ -39,36 +39,6 @@ TITLE = "墨"
 TITLE_BUSY = "墨…"
 TITLE_ERROR = "墨!"
 
-# 每次推送同时落一张预览图，「查看当前画面」直接打开它
-PREVIEW_PNG = quota.CACHE_DIR / "last_push_preview.png"
-
-INTERVAL_CHOICES = [(300, "5 分钟"), (900, "15 分钟"),
-                    (1800, "30 分钟"), (3600, "1 小时")]
-
-
-def _env_interval() -> int:
-    try:
-        return max(60, int(os.environ.get("INKSCRY_SYNC_INTERVAL", "900")))
-    except ValueError:
-        return 900
-
-
-def _panel_line(p: dict) -> str:
-    """把一条屏显签名（cli._state_signature 的元素）排成菜单行。"""
-    parts = []
-    if p.get("balance"):
-        parts.append(p["balance"])
-        if p.get("detail"):
-            parts.append(p["detail"])
-    else:
-        if p.get("five") is not None:
-            parts.append(f"5时 {p['five']}%")
-        if p.get("week") is not None:
-            parts.append(f"1周 {p['week']}%")
-    body = " · ".join(parts) or "--"
-    warn = "⚠ " if p.get("stale") or p.get("alert") else ""
-    return f"{warn}{p['label']}  {body}"
-
 
 class InkScryBar(rumps.App if rumps else object):
     def __init__(self) -> None:
@@ -81,7 +51,7 @@ class InkScryBar(rumps.App if rumps else object):
         self.interval_items = {
             sec: rumps.MenuItem(label,
                                 callback=lambda _i, s=sec: self._set_interval(s))
-            for sec, label in INTERVAL_CHOICES}
+            for sec, label in cli.INTERVAL_CHOICES}
         self.interval_menu = rumps.MenuItem("同步间隔")
         self.interval_menu.update(list(self.interval_items.values()))
         self.screen_menu = rumps.MenuItem("屏幕管理")
@@ -107,7 +77,7 @@ class InkScryBar(rumps.App if rumps else object):
         self._rebuild("启动中…")
 
         self._sync_timer: rumps.Timer | None = None
-        self._set_interval(_env_interval())   # 建定时器；NSTimer 启动即触发首轮
+        self._set_interval(cli._env_interval())   # 建定时器；NSTimer 启动即触发首轮
         rumps.Timer(self._apply_pending, 1).start()
 
     # ── 菜单动作（主线程）─────────────────────────────────
@@ -140,8 +110,8 @@ class InkScryBar(rumps.App if rumps else object):
         self._sync_timer.start()   # 启动即触发一轮，再按新间隔重复
 
     def on_preview(self, _item) -> None:
-        if PREVIEW_PNG.exists():
-            subprocess.Popen(["open", str(PREVIEW_PNG)])
+        if cli.PREVIEW_PNG.exists():
+            subprocess.Popen(["open", str(cli.PREVIEW_PNG)])
         else:
             self._rebuild(f"{time.strftime('%H:%M')} 尚无画面缓存，"
                           "请先「立即刷新」")
@@ -164,7 +134,7 @@ class InkScryBar(rumps.App if rumps else object):
             del os.environ[k]
         config.load_dotenv()
         self._rebuild(f"{time.strftime('%H:%M')} 配置已重载")
-        self._set_interval(_env_interval())   # 顺带按新配置重建定时器并同步一轮
+        self._set_interval(cli._env_interval())   # 顺带按新配置重建定时器并同步一轮
 
     def _spawn(self, work, **kwargs) -> None:
         if not self._busy.acquire(blocking=False):
@@ -176,7 +146,7 @@ class InkScryBar(rumps.App if rumps else object):
     def _sync_work(self, force: bool) -> None:
         stamp = time.strftime("%H:%M")
         try:
-            msg, sig = asyncio.run(cli.sync_once(save=str(PREVIEW_PNG),
+            msg, sig = asyncio.run(cli.sync_once(save=str(cli.PREVIEW_PNG),
                                                  force=force))
             self._pending = (f"{stamp} {msg}", sig or None, False, None)
         except Exception as e:   # 设备不在场/断网：显示失败，下轮重试
@@ -223,7 +193,7 @@ class InkScryBar(rumps.App if rumps else object):
         if panels:
             items.append(None)
             for p in panels:
-                items.append(rumps.MenuItem(_panel_line(p)))
+                items.append(rumps.MenuItem(cli._panel_line(p)))
         items += [None, self.refresh_item, self.pause_item,
                   None, self.interval_menu, self.screen_menu, self.config_menu,
                   None, rumps.MenuItem("退出", callback=rumps.quit_application)]
