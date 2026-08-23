@@ -1,10 +1,11 @@
 """系统托盘常驻程序（Windows / Linux）：定时同步墨水屏，变化才刷。
 
-功能与 macOS 的 inkscry-bar 对齐：托盘图标是 Pillow 渲染的「墨」字
-（白字黑描边，同步中变灰、失败变红），菜单提供面板数据一览、
-立即刷新、暂停/恢复、同步间隔、屏幕管理（查看当前画面/清屏）、
-配置（编辑 .env/重载）。同步节奏同 `inkscry --watch`：
-INKSCRY_SYNC_INTERVAL / INKSCRY_QUIET / INKSCRY_HEARTBEAT。
+功能与 macOS 的 inkscry-bar 对齐：托盘图标是 Pillow 渲染的
+「迷你墨水屏」（白屏黑框 + 底部红色状态栏，同步中整体置灰、
+失败时框条全红），菜单提供面板数据一览、立即刷新、暂停/恢复、
+同步间隔、屏幕管理（查看当前画面/清屏）、配置（编辑 .env/重载）。
+同步节奏同 `inkscry --watch`：INKSCRY_SYNC_INTERVAL /
+INKSCRY_QUIET / INKSCRY_HEARTBEAT。
 
 依赖 pystray：pip install '.[tray]'
 入口：inkscry-tray 或 python -m inkscry.tray
@@ -23,7 +24,7 @@ import time
 
 from PIL import Image, ImageDraw
 
-from . import ble, cli, config, renderer
+from . import ble, cli, config
 
 try:
     import pystray
@@ -33,21 +34,29 @@ except ImportError:
 log = logging.getLogger("inkscry.tray")
 
 ICON_SIZE = 64
-# 白字黑描边：浅色/深色任务栏都可见；同步中灰、失败红
-STATE_COLORS = {"normal": (255, 255, 255), "busy": (150, 150, 150),
-                "error": (230, 60, 60)}
+STATES = ("normal", "busy", "error")
+INK = (25, 25, 28, 255)
+RED = (215, 50, 45, 255)
+GRAY = (150, 150, 152, 255)
 
 
-def _make_icon(rgb: tuple[int, int, int]) -> Image.Image:
-    """用 Pillow 把「墨」字渲染成托盘图标（透明底）。"""
+def _make_icon(state: str) -> Image.Image:
+    """托盘图标「迷你墨水屏」：白屏黑框 + 内容线 + 底部红色状态栏。
+
+    白底黑框在明暗任务栏都清晰；normal=黑框红条，busy=整体置灰，
+    error=框条全红。
+    """
+    frame = {"normal": INK, "busy": GRAY, "error": RED}[state]
+    bar = GRAY if state == "busy" else RED
+    title = INK if state == "normal" else frame
     img = Image.new("RGBA", (ICON_SIZE, ICON_SIZE), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    font = renderer._load_font(52, bold=True, cjk=True)
-    left, top, right, bottom = d.textbbox((0, 0), "墨", font=font)
-    d.text(((ICON_SIZE - (right - left)) / 2 - left,
-            (ICON_SIZE - (bottom - top)) / 2 - top),
-           "墨", font=font, fill=rgb + (255,),
-           stroke_width=2, stroke_fill=(0, 0, 0, 255))
+    d.rounded_rectangle([4, 8, 60, 56], radius=9, fill=(255, 255, 255, 255),
+                        outline=frame, width=4)
+    d.rectangle([13, 18, 36, 24], fill=title)            # 标题块
+    d.rectangle([13, 29, 51, 33], fill=GRAY)             # 内容线
+    d.rectangle([13, 38, 43, 42], fill=GRAY)
+    d.rectangle([9, 46, 55, 52], fill=bar)               # 底部状态栏
     return img
 
 
@@ -72,7 +81,7 @@ class InkScryTray:
         if isinstance(data, list):   # 兼容旧格式（纯面板列表）
             data = {"panels": data}
         self._last_sig: dict = data if isinstance(data, dict) else {}
-        self.icons = {k: _make_icon(c) for k, c in STATE_COLORS.items()}
+        self.icons = {k: _make_icon(k) for k in STATES}
         self.icon = pystray.Icon("inkscry", self.icons["normal"], "InkScry",
                                  menu=pystray.Menu(self._menu_items))
 

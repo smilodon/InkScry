@@ -200,9 +200,10 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
   添加它即可。
 - **Windows / Linux 托盘程序**：`pip install '.[tray]'` 后运行
   `inkscry-tray`（pystray）。功能与菜单栏版对齐：托盘图标是 Pillow
-  渲染的「墨」字（白字黑描边，同步中变灰、失败变红），右键菜单同样
-  提供面板一览与全部管理项。开机自启：快捷方式放进「启动」文件夹
-  （`shell:startup`）。BLE 部分 Windows 尚未真机实测。
+  渲染的「迷你墨水屏」（白屏黑框 + 底部红色状态栏，同步中整体
+  置灰、失败时框条全红），右键菜单同样提供面板一览与全部管理项。
+  开机自启：快捷方式放进「启动」文件夹（`shell:startup`）。
+  BLE 部分 Windows 尚未真机实测。
 - **常驻命令行**：`inkscry --watch`（跨平台，适合 tmux / 服务器）
 - **单次检查**：`inkscry --sync`，配合 launchd / Windows 任务计划 /
   systemd timer 自定节奏
