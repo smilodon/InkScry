@@ -170,11 +170,13 @@ def _fit(d: ImageDraw.ImageDraw, text: str, font, max_w: int) -> str:
 
 
 def _panel_content_h(p: QuotaPanel) -> int:
-    """面板实际内容高度：标题 26 + 块（含底行 44 / 无 28）。用于垂直居中。"""
-    if p.balance:
-        has_bottom = p.bar_pct is not None or p.detail or p.alert
-        return 70 if has_bottom else 42
-    return 70 if (p.five_reset or p.week_reset) else 54
+    """面板内容高度：统一按满配计（标题 26 + 块含底行 44）。用于垂直居中。
+
+    缺失的重置行/备注行保留占位空间，相邻面板无论内容多少都以同一
+    高度居中——标题、大数字、进度条跨面板严格对齐（否则少一行的
+    面板会整体下沉，如 GLM 窗口未启动时无重置时间）。
+    """
+    return 70
 
 
 def _draw_quota_block(d: ImageDraw.ImageDraw, x0: int, w: int, by: int,
