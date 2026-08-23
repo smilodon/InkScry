@@ -6,6 +6,8 @@
     cli.py --demo                        # 渲染示例图并推送到墨水屏
     cli.py --clear / --sleep             # 清屏 / 休眠
     cli.py --print-hooks                 # 输出 settings.json hooks 配置
+    cli.py --sync                        # 定时同步单次：额度有变化才刷屏
+    cli.py --watch                       # 常驻定时同步程序
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import ble, monitor, quota, renderer
+from . import ble, config, monitor, quota, renderer
 
 log = logging.getLogger("inkscry")
 
@@ -115,6 +117,142 @@ def _throttled(event: str) -> int:
     return max(0, int(interval - (time.time() - last)))
 
 
+# ── 定时同步（--sync 单次 / --watch 常驻）──────────────────────
+# 查额度是电脑侧 HTTP（免费），刷屏是设备侧 BLE + 全刷（三色屏必闪
+# 十几秒、毫安级耗电）：高频查、低频刷——屏显数据有变化才值得推送。
+
+
+def _infer_status() -> str:
+    """无 hook 场景从最新会话日志 mtime 推断状态（10 分钟内活跃 → running）。"""
+    try:
+        latest = monitor.find_latest_session()
+        if latest and time.time() - latest.stat().st_mtime < 600:
+            return "running"
+    except OSError:
+        pass
+    return "idle"
+
+
+def _state_signature(state: renderer.DashboardState) -> list[dict]:
+    """额度面板的屏显签名：只收会画到屏上的值，并按屏显精度取整。
+
+    底栏时间戳、事件状态字不参与比对——只有额度数据变化才触发全刷，
+    状态字的更新搭数据变化的便车。
+    """
+    return [{
+        "label": p.label,
+        "five": None if p.five_pct is None else f"{p.five_pct:.0f}",
+        "five_reset": p.five_reset,
+        "week": None if p.week_pct is None else f"{p.week_pct:.0f}",
+        "week_reset": p.week_reset,
+        "balance": p.balance,
+        "alert": p.alert,
+        "stale": p.stale,
+        "bar": None if p.bar_pct is None else f"{p.bar_pct:.0f}",
+        "detail": p.detail,
+    } for p in state.quota_panels]
+
+
+def _heartbeat_due() -> bool:
+    """INKSCRY_HEARTBEAT（小时，默认 0 关闭）：超时未推则强制刷一次，
+    让右下角时间戳保持可信（区分「数据没变」和「同步挂了」）。"""
+    try:
+        hours = float(os.environ.get("INKSCRY_HEARTBEAT", "0"))
+    except ValueError:
+        hours = 0.0
+    if hours <= 0:
+        return False
+    try:
+        last = float((quota.CACHE_DIR / "last_push").read_text().strip())
+    except (OSError, ValueError):
+        return True
+    return time.time() - last > hours * 3600
+
+
+def _in_quiet(hour: int) -> bool:
+    """INKSCRY_QUIET=23-8 静默时段判断（含起点不含终点，支持跨零点）。"""
+    spec = os.environ.get("INKSCRY_QUIET", "")
+    if "-" not in spec:
+        return False
+    try:
+        start, end = (int(x) for x in spec.split("-", 1))
+    except ValueError:
+        return False
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+async def sync_once(address: str | None = None, save: str | None = None,
+                    no_ble: bool = False, force: bool = False
+                    ) -> tuple[str, list[dict]]:
+    """同步一轮：查额度 → 与上次已推画面比对 → 有变化才连 BLE 推送。
+
+    force（菜单栏「立即刷新」）跳过防抖与比对，必推。
+    返回 (一句话结果, 当前屏显签名)，供菜单栏程序展示。
+    """
+    if not force:
+        skip = _throttled("sync")
+        if skip:
+            msg = f"{skip}s 内已有推送，本轮让路"
+            log.info("同步：%s", msg)
+            return msg, []
+    state = build_state("sync", "", {})
+    state.status = _infer_status()
+    sig = _state_signature(state)
+    state_file = quota.CACHE_DIR / "last_pushed_state.json"
+    try:
+        old = json.loads(state_file.read_text())
+    except (OSError, ValueError):
+        old = None
+    changed = sig != old
+    if not force and not changed and not _heartbeat_due():
+        msg = "数据无变化，未刷屏"
+        log.info("同步：%s", msg)
+        return msg, sig
+    result = renderer.render(state)
+    if save:
+        result.preview().save(save)
+    reason = ("手动刷新" if force
+              else "数据有变化" if changed else "心跳强制刷新")
+    if no_ble:
+        msg = f"检测到{reason}（--no-ble 不推送不记录）"
+        log.info("同步：%s", msg)
+        return msg, sig
+    async with ble.EPDClient(address=address) as epd:
+        await epd.push_image(result.black_bytes(), result.red_bytes())
+    quota.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (quota.CACHE_DIR / "last_push").write_text(str(time.time()))
+    state_file.write_text(json.dumps(sig, ensure_ascii=False))
+    msg = f"{reason}，已推送"
+    log.info("同步：%s", msg)
+    return msg, sig
+
+
+async def watch(args: argparse.Namespace) -> int:
+    """常驻程序：周期执行 sync_once，异常不退出（设备不在场下轮重试）。"""
+    try:
+        interval = int(os.environ.get("INKSCRY_SYNC_INTERVAL", "900"))
+    except ValueError:
+        interval = 900
+    interval = max(60, interval)
+    quiet = os.environ.get("INKSCRY_QUIET", "")
+    log.info("常驻同步启动：每 %ds 检查一次%s", interval,
+             f"，静默时段 {quiet} 点" if quiet else "")
+    while True:
+        if _in_quiet(time.localtime().tm_hour):
+            await asyncio.sleep(300)
+            continue
+        try:
+            await sync_once(address=args.address, save=args.save,
+                            no_ble=args.no_ble)
+        except Exception as e:   # BLE/网络失败不退出常驻循环
+            log.warning("本轮同步失败（下轮重试）: %s", e)
+        await asyncio.sleep(interval)
+
+
 async def run(args: argparse.Namespace) -> int:
     if args.clear or args.sleep:
         async with ble.EPDClient(address=args.address) as epd:
@@ -192,6 +330,10 @@ def main() -> int:
     ap.add_argument("--no-ble", action="store_true", help="只渲染，不推送")
     ap.add_argument("--no-quota", action="store_true", help="跳过额度查询")
     ap.add_argument("--quota", action="store_true", help="仅打印额度（不刷屏）")
+    ap.add_argument("--sync", action="store_true",
+                    help="定时同步单次：额度有变化才推送（配合系统定时器）")
+    ap.add_argument("--watch", action="store_true",
+                    help="常驻定时同步：周期查额度，变化才刷屏")
     ap.add_argument("--clear", action="store_true", help="清屏")
     ap.add_argument("--sleep", action="store_true", help="屏幕休眠")
     ap.add_argument("--print-hooks", action="store_true",
@@ -201,6 +343,8 @@ def main() -> int:
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")
+    # 提前加载 .env：防抖/同步间隔等配置在首次额度查询前就会被读取
+    config.load_dotenv()
 
     if args.print_hooks:
         cfg = {"hooks": {
@@ -244,6 +388,12 @@ def main() -> int:
             if not entries:
                 print("未取到额度数据（检查 codex login / 供应商配置 / 网络）")
                 return 1
+            return 0
+        if args.watch:
+            return asyncio.run(watch(args))
+        if args.sync:
+            asyncio.run(sync_once(address=args.address, save=args.save,
+                                  no_ble=args.no_ble))
             return 0
         return asyncio.run(run(args))
     except KeyboardInterrupt:

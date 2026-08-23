@@ -14,8 +14,12 @@ dependencies = [
     "Pillow>=10.1",
 ]
 
+[project.optional-dependencies]
+menubar = ["rumps>=0.4; sys_platform == 'darwin'"]
+
 [project.scripts]
 inkscry = "inkscry.cli:main"
+inkscry-bar = "inkscry.menubar:main"
 
 [tool.setuptools]
 packages = ["inkscry"]

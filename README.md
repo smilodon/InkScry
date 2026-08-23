@@ -40,6 +40,7 @@ Claude Code ──hooks──> inkscry.cli ──> renderer (PIL, 400x300 双平
 
 ```bash
 pip install .                     # 装成 inkscry 命令（下文 python -m inkscry.cli 均可换用 inkscry）
+pip install '.[menubar]'          # 可选：macOS 菜单栏程序 inkscry-bar（rumps）
 # 或只装依赖跑源码：pip install -r requirements.txt
 ```
 
@@ -71,6 +72,11 @@ python -m inkscry.cli --quota           # 仅打印额度（强制联网刷新�
 
 # 生成 hooks 配置
 python -m inkscry.cli --print-hooks
+
+# 定时同步：额度有变化才刷屏（详见「定时同步」一节）
+inkscry-bar                             # macOS 菜单栏常驻程序（推荐）
+python -m inkscry.cli --watch           # 常驻命令行，默认每 15 分钟检查
+python -m inkscry.cli --sync            # 单次检查，配合系统定时器
 ```
 
 把 `--print-hooks` 输出的 `"hooks"` 块合并进 `~/.claude/settings.json`。
@@ -171,6 +177,32 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
 - 墨水屏画面保持零功耗；耗电大头是全刷波形，频繁刷屏比 BLE 连接更费电
 - 切勿发送 `0x92 SYS_SLEEP`：主控深睡后停止广播，只能物理按键唤醒
 
+## 定时同步（菜单栏程序 / --watch / --sync）
+
+事件驱动的盲区是「不用 Claude 的时候」——额度重置、余额变动不会
+反映到屏上。定时同步补上这块：按间隔查额度（电脑侧 HTTP，免费），
+与屏上内容做**屏显精度**的签名比对，有变化才连 BLE 推送（三色全刷
+必闪十几秒、毫安级耗电，盲目到点就刷不可取）。空闲一天实际只刷
+几次（≈数据真实变化次数），数据新鲜度 ≤ 检查间隔。
+
+三种跑法，共用一套配置（`INKSCRY_SYNC_INTERVAL` 检查间隔秒数、
+`INKSCRY_QUIET` 静默时段、`INKSCRY_HEARTBEAT` 心跳，见 .env 注释）：
+
+- **macOS 菜单栏程序（推荐）**：`pip install '.[menubar]'` 后运行
+  `inkscry-bar`。菜单栏常年一个「墨」字（同步中「墨…」、失败
+  「墨!」），下拉菜单显示屏上各面板数据与上次同步结果，可「立即
+  刷新」（跳过防抖与比对必推）或暂停自动同步。开机自启：系统设置
+  → 通用 → 登录项 添加它即可。
+- **常驻命令行**：`inkscry --watch`（跨平台，适合 tmux / 服务器）
+- **单次检查**：`inkscry --sync`，配合 launchd / Windows 任务计划 /
+  systemd timer 自定节奏
+
+细节：hook 事件永远优先（sync 撞上推送防抖窗口自动让路）；无 hook
+时底栏状态按最新会话日志活跃度推断（10 分钟内活跃 → 运行中）；
+状态字与右下角时间戳**不参与比对**，只搭数据变化的便车——不为一个
+词全屏闪一次。`INKSCRY_HEARTBEAT>0` 时超过 N 小时无推送则强制刷
+一次，让时间戳保持可信（区分「数据没变」和「同步挂了」）。
+
 ## 字体
 
 默认使用系统等宽字体（macOS Menlo）。想用像素字体（Dina / Misaki / Fixedsys
@@ -190,7 +222,8 @@ Linux Noto CJK——均不受 `fonts/` 目录影响。面板正文（百分比�
 | `inkscry/monitor.py` | Claude 会话 jsonl 解析（工具/Token/费用/时长） |
 | `inkscry/quota.py` | 多供应商额度/余额查询（订阅制 + 余额制），5min 缓存 |
 | `inkscry/config.py` | .env 配置加载 |
-| `inkscry/cli.py` | hook 事件入口 + 设备指令 |
+| `inkscry/cli.py` | hook 事件入口 + 设备指令 + 定时同步（--sync/--watch） |
+| `inkscry/menubar.py` | macOS 菜单栏常驻程序（rumps，可选依赖） |
 
 ## 路线图
 
@@ -198,4 +231,5 @@ Linux Noto CJK——均不受 `fonts/` 目录影响。面板正文（百分比�
 - [x] M2 Hooks 状态监听 + 会话日志解析
 - [x] M3 三区排版渲染 + 红色告警栏
 - [x] 多额度面板：Codex/Claude/Kimi/GLM/MiniMax + 余额制（DeepSeek/NewAPI/Sub2API），自动识别或 .env 配置，布局自适应
-- 后续见 [TODO.md](TODO.md)（刷新防抖 / 局部刷新 / 固件字库 / 按键回传）
+- [x] 定时同步：变化才刷（--sync / --watch + macOS 菜单栏程序 inkscry-bar）
+- 后续见 [TODO.md](TODO.md)（局部刷新 / 固件字库 / 按键回传）

@@ -1,5 +1,17 @@
 # InkScry TODO
 
+## P2 — 定时同步（已实现 2026-08-23）
+
+- 背景：事件驱动的盲区是「不用 Claude 的时候」——额度重置/余额变化不会上屏
+  （实例：Codex 周额度 08-21 重置，屏上挂着 0% 直到 08-23 手动推送）。
+- 架构：高频查（电脑侧 HTTP 免费）低频刷（设备侧全刷昂贵）。
+  `--sync` 单轮：查额度 → 屏显精度签名比对（`last_pushed_state.json`）→
+  有变化才推；`--watch` 常驻循环；`inkscry-bar` macOS 菜单栏程序（rumps，
+  可选依赖，菜单内看面板数据/立即刷新/暂停）。
+- 配置：`INKSCRY_SYNC_INTERVAL`（默认 900s）/ `INKSCRY_QUIET`（静默时段）/
+  `INKSCRY_HEARTBEAT`（超时强制推，默认关）。hook 推送优先，sync 自动让路；
+  底栏状态无 hook 时按会话日志 mtime 推断。
+
 ## P3 — 刷新防抖
 
 - 背景：墨水屏全刷是耗电大头（毫安级 × 十几秒），频繁 hook 事件（如连续 Stop）会反复全刷，耗电且伤屏。
