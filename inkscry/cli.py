@@ -143,6 +143,8 @@ def _state_signature(state: renderer.DashboardState) -> dict:
     """
     return {
         "banner": state.status if state.status in ("waiting", "error") else "",
+        # 与 renderer 的 6 面板上限一致：签名只收真正画上屏的面板，
+        # 否则被裁掉的面板数据一变就会触发一次画面毫无变化的全刷
         "panels": [{
             "label": p.label,
             "five": None if p.five_pct is None else f"{p.five_pct:.0f}",
@@ -154,7 +156,7 @@ def _state_signature(state: renderer.DashboardState) -> dict:
             "stale": p.stale,
             "bar": None if p.bar_pct is None else f"{p.bar_pct:.0f}",
             "detail": p.detail,
-        } for p in state.quota_panels],
+        } for p in state.quota_panels[:6]],
     }
 
 

@@ -1,10 +1,12 @@
 """多供应商额度/余额查询。
 
-订阅制（5h/1w 窗口）：Codex / Claude / Kimi / 智谱 GLM / MiniMax；
+订阅制（5h/1w 窗口）：Codex / Claude / Kimi / 智谱 GLM / MiniMax /
+Mirasim（桌面客户端本机接口）；
 余额制（预付费或自建中转）：DeepSeek / New API / Sub2API。
 凭据来源三种，可混用（同一家以 .env 优先）：
     Codex  ← ~/.codex/auth.json；Claude ← Keychain / ~/.claude/.credentials.json
     当前供应商 ← ~/.claude/settings.json 的 ANTHROPIC_BASE_URL
+    Mirasim ← 本机 ~/.mirasim 存在即自动识别（回环接口，无需 token）
     .env   ← INKSCRY_{X}_TOKEN（自建中转必须另配 INKSCRY_{X}_BASE）
 带本地缓存：hook 触发刷屏是高频事件，网络查询默认 5 分钟一次；
 网络失败时回退到过期的缓存数据，最差情况只是额度数字旧一点。
@@ -15,6 +17,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -227,7 +230,8 @@ def get_quota(cache_ttl: int = CACHE_TTL) -> CodexQuota | None:
 
 PROVIDER_LABELS = {"claude": "CLAUDE", "kimi": "KIMI", "zhipu": "GLM",
                    "minimax": "MINIMAX", "deepseek": "DEEPSEEK",
-                   "newapi": "NEWAPI", "sub2api": "SUB2API"}
+                   "newapi": "NEWAPI", "sub2api": "SUB2API",
+                   "mirasim": "MIRASIM"}
 # .env 变量名后缀（INKSCRY_{X}_TOKEN / INKSCRY_{X}_BASE），兼定义面板顺序
 ENV_KEYS = {"claude": "CLAUDE", "kimi": "KIMI", "zhipu": "GLM",
             "minimax": "MINIMAX", "deepseek": "DEEPSEEK",
@@ -516,6 +520,72 @@ def query_sub2api_usage(base: str, token: str) -> CodexQuota:
                       detail=detail)
 
 
+def _mirasim_bases() -> list[str]:
+    """枚举本机 Mirasim 进程的回环监听端口（hub 端口随启动漂移）。
+
+    对齐 mirasim-quota-widget 的 probe 思路：按平台列出进程的
+    127.0.0.1 LISTEN 端口，交给调用方逐个探测 /v1/limits。
+    """
+    cmds = {
+        "darwin": ["lsof", "-a", "-iTCP", "-sTCP:LISTEN", "-nP",
+                   "-c", "Mirasim"],
+        "linux": ["sh", "-c", "ss -ltnpH 2>/dev/null | grep -i mirasim"],
+        "win32": ["powershell", "-NoProfile", "-Command",
+                  "$p=(Get-Process Mirasim -ErrorAction SilentlyContinue).Id;"
+                  "if($p){Get-NetTCPConnection -State Listen | Where-Object"
+                  " { $p -contains $_.OwningProcess -and $_.LocalAddress"
+                  " -eq '127.0.0.1' } | ForEach-Object LocalPort}"],
+    }
+    try:
+        out = subprocess.run(cmds.get(sys.platform, cmds["linux"]),
+                             capture_output=True, text=True,
+                             timeout=8).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    ports = re.findall(r"127\.0\.0\.1:(\d{2,5})", out)
+    if not ports:   # win32 输出为每行一个纯端口号
+        ports = re.findall(r"^\s*(\d{2,5})\s*$", out, re.M)
+    return [f"http://127.0.0.1:{p}" for p in dict.fromkeys(ports)]
+
+
+def query_mirasim_usage(base: str, token: str) -> CodexQuota:
+    """Mirasim 桌面客户端: GET http://127.0.0.1:{hub}/v1/limits（无鉴权）。
+
+    base="auto" 时自动探测 hub 端口（漂移端口，见 _mirasim_bases）；
+    INKSCRY_MIRASIM_BASE 可显式固定。windows[]: name=5h/7d,
+    used/budget=积分, reset_at=epoch 秒。web 端口(4970)返回 SPA HTML、
+    其他端口返回无 windows 的 JSON，均被安全跳过。
+    """
+    bases = [base] if base and base != "auto" else _mirasim_bases()
+    body = None
+    for b in bases:
+        try:
+            data = _get_json(f"{b}/v1/limits", {"Accept": "application/json"})
+        except Exception:   # 连接拒绝 / 非 JSON（HTML 兜底页）
+            continue
+        if isinstance(data, dict) and data.get("windows"):
+            body = data
+            break
+    if body is None:
+        raise OSError("未探测到 Mirasim 本机 hub 接口（客户端未运行？）")
+    five = weekly = None
+    for w in body["windows"]:
+        try:
+            budget = float(w.get("budget") or 0)
+            used = float(w.get("used") or 0)
+        except (TypeError, ValueError):
+            continue
+        if budget <= 0:
+            continue
+        win = QuotaWindow(used_pct=used / budget * 100,
+                          reset=_parse_reset(w.get("reset_at")))
+        if w.get("name") == "5h":
+            five = win
+        elif w.get("name") == "7d":
+            weekly = win
+    return CodexQuota(five_h=five, one_w=weekly, fetched_at=time.time())
+
+
 _QUERY_FNS = {
     "claude": query_claude_usage,
     "kimi": query_kimi_usage,
@@ -524,6 +594,7 @@ _QUERY_FNS = {
     "deepseek": query_deepseek_usage,
     "newapi": query_newapi_usage,
     "sub2api": query_sub2api_usage,
+    "mirasim": query_mirasim_usage,
 }
 
 
@@ -606,6 +677,15 @@ def load_coding_providers() -> list[tuple[str, str, str, str]]:
             label = (labels[i] if i < len(labels) and labels[i]
                      else (name if i == 0 else f"{name}{i + 1}"))
             providers[key] = (base, tok, label)
+    # Mirasim 桌面客户端（本机回环接口，无需 token）：装了就自动识别；
+    # INKSCRY_MIRASIM_BASE 可显式固定 hub 地址（缺省 "auto" 由查询阶段
+    # 探测漂移端口）；INKSCRY_MIRASIM_LABELS 自定义面板名
+    mira_base = (os.environ.get("INKSCRY_MIRASIM_BASE") or "").rstrip("/")
+    if mira_base or (Path.home() / ".mirasim").exists():
+        label = next((l.strip() for l in
+                      (os.environ.get("INKSCRY_MIRASIM_LABELS") or "").split(",")
+                      if l.strip()), PROVIDER_LABELS["mirasim"])
+        providers.setdefault("mirasim", (mira_base or "auto", "", label))
     return [(key, *providers[key]) for key in providers]
 
 

@@ -8,7 +8,7 @@ EPD-nRF5 固件墨水屏（4.2 寸三色）专用的 Claude Code / Codex 状态�
 ```
 Claude Code ──hooks──> inkscry.cli ──> renderer (PIL, 400x300 双平面)
                                      ├─> monitor (解析 ~/.claude/projects/*.jsonl)
-                                     └─> quota   (Codex/Claude/Kimi/GLM/MiniMax/DeepSeek/NewAPI/Sub2API)
+                                     └─> quota   (Codex/Claude/Kimi/GLM/MiniMax/DeepSeek/NewAPI/Sub2API/Mirasim)
                                             │
                                      ble.py (bleak) ──BLE──> 墨水屏
 ```
@@ -96,7 +96,7 @@ Claude 主流程。
 ## 订阅额度（多面板分列）
 
 中部为额度面板区：Codex + 已配置的供应商（Claude/Kimi/GLM/MiniMax/
-DeepSeek/NewAPI/Sub2API），订阅制面板显示 5h/1w 窗口剩余量（大数字 +
+DeepSeek/NewAPI/Sub2API/Mirasim），订阅制面板显示 5h/1w 窗口剩余量（大数字 +
 进度条 + 重置时间），余额制面板（DeepSeek/NewAPI/Sub2API）显示余额。布局自适应：≤2 个分列排；3 个起切成 2 列
 × ⌈n/2⌉ 行网格（列宽 200px；面板内 5h/1w 左右横排，最多 6 个）。
 所有布局面板内容均按统一满配高度垂直居中（缺失的重置行/备注行
@@ -115,7 +115,8 @@ NEWAPI → SUB2API，可用 `INKSCRY_PANEL_ORDER=KIMI,GLM,CODEX` 自定义
 
 1. **自动识别（零配置）**：Codex 读 `~/.codex/auth.json`（codex login
    自动续期）；Coding Plan 读 `~/.claude/settings.json` 里 Claude Code
-   正在用的 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`
+   正在用的 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`；Mirasim
+   检测到 `~/.mirasim` 即启用（桌面客户端本机回环接口，无需凭据）
 2. **.env 显式配置**：`INKSCRY_{CODEX,CLAUDE,KIMI,GLM,MINIMAX,DEEPSEEK,NEWAPI,SUB2API}_TOKEN`，
    配了就显示，可同时配多家；Codex 另有 `INKSCRY_CODEX_AUTH` 指定 auth.json
    路径（如第二账号）、`INKSCRY_CODEX_ACCOUNT_ID` 指定工作区；国际版
@@ -133,6 +134,7 @@ NEWAPI → SUB2API，可用 `INKSCRY_PANEL_ORDER=KIMI,GLM,CODEX` 自定义
 | DEEPSEEK | `deepseek.com` | `api.deepseek.com/user/balance`（余额模式） |
 | NEWAPI | 无（自建，必须配 BASE） | `{base}/api/user/self`（余额模式） |
 | SUB2API | 无（自建，必须配 BASE） | `{base}/v1/usage`（余额模式，sk- key） |
+| MIRASIM | 本机 `~/.mirasim`（桌面客户端） | `127.0.0.1:{hub}/v1/limits`（本机无鉴权，端口自动探测） |
 
 DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模式**，
 与额度面板同构三段式：`bal ¥xx.xx` 金额行（超宽自动缩号不截断）、
@@ -154,6 +156,12 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
 - Sub2API：Token 是面板里创建的 **sk- API key**（长期有效，非登录 JWT）；
   走 `/v1/usage`（对齐 cc-switch），返回余额 + 每日消耗，备注行显示
   最近一天的花费「MM-DD $x」
+- Mirasim：桌面客户端的**本机接口**（127.0.0.1，无鉴权无 token）。
+  hub 端口随进程启动漂移：查询时自动枚举 Mirasim 进程的回环监听
+  端口逐个探测 `/v1/limits`（web 端口 4970 返回 SPA 页面、shell 口
+  返回无 windows 的 JSON，都会被跳过）；`INKSCRY_MIRASIM_BASE` 可
+  显式固定。`windows[]` 的 used/budget 为积分、reset_at 为 epoch 秒。
+  非官方接口（思路对齐 mirasim-quota-widget），客户端更新可能需适配
 - NEWAPI/SUB2API 支持**多实例**（多站点/多账号）：`BASE` 和 `TOKEN` 用
   逗号分隔按位置配对，如 `BASE=a,b` + `TOKEN=t1,t2` → `NEWAPI`/`NEWAPI2`
   两个面板（各自独立域名和缓存；`USER_ID` 没配够时复用最后一个值）。
