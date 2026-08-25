@@ -568,7 +568,8 @@ def query_mirasim_usage(base: str, token: str) -> CodexQuota:
             break
     if body is None:
         raise OSError("未探测到 Mirasim 本机 hub 接口（客户端未运行？）")
-    five = weekly = None
+    fives: list[QuotaWindow] = []
+    weeks: list[QuotaWindow] = []
     for w in body["windows"]:
         try:
             budget = float(w.get("budget") or 0)
@@ -579,10 +580,16 @@ def query_mirasim_usage(base: str, token: str) -> CodexQuota:
             continue
         win = QuotaWindow(used_pct=used / budget * 100,
                           reset=_parse_reset(w.get("reset_at")))
-        if w.get("name") == "5h":
-            five = win
-        elif w.get("name") == "7d":
-            weekly = win
+        name = str(w.get("name", ""))
+        if name.startswith("5h"):
+            fives.append(win)
+        elif name.startswith("7d"):
+            weeks.append(win)
+    # 同一窗口可能带档位子额度（如 7d_fable，预算 ≈ 总窗 53%）：
+    # 取已用百分比最高者——先撞墙的才是真实约束（全用 Fable 时
+    # 子额度消耗速度约为总窗的 1.9 倍）
+    five = max(fives, key=lambda w: w.used_pct, default=None)
+    weekly = max(weeks, key=lambda w: w.used_pct, default=None)
     return CodexQuota(five_h=five, one_w=weekly, fetched_at=time.time())
 
 

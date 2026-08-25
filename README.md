@@ -162,6 +162,8 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
   端口逐个探测 `/v1/limits`（web 端口 4970 返回 SPA 页面、shell 口
   返回无 windows 的 JSON，都会被跳过）；`INKSCRY_MIRASIM_BASE` 可
   显式固定。`windows[]` 的 used/budget 为积分、reset_at 为 epoch 秒。
+  同一窗口可能带档位子额度（如 `7d_fable`，预算约为总周窗的一半）：
+  面板取**已用百分比最高**的那条显示——先撞墙的才是真实约束。
   非官方接口（思路对齐 mirasim-quota-widget），客户端更新可能需适配
 - NEWAPI/SUB2API 支持**多实例**（多站点/多账号）：`BASE` 和 `TOKEN` 用
   逗号分隔按位置配对，如 `BASE=a,b` + `TOKEN=t1,t2` → `NEWAPI`/`NEWAPI2`
