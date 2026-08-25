@@ -66,6 +66,8 @@ class CodexQuota:
     bar_pct: float | None = None   # 余额模式占比条：DeepSeek=充值占比，
                                    # NewAPI=剩余占比；None=不画条
     detail: str = ""         # 余额模式备注行：如 "赠 ¥1.00" / "已用 $2.50"
+    extra: QuotaWindow | None = None   # 第三窗口（如 Mirasim 7d_fable）
+    extra_label: str = ""              # 第三窗口的档位标签（如 "F周"）
 
 
 # ---------------------------------------------------------------- 认证
@@ -182,7 +184,8 @@ def _to_json(q: CodexQuota) -> dict:
     return {"five_h": win(q.five_h), "one_w": win(q.one_w),
             "fetched_at": q.fetched_at,
             "balance": q.balance, "available": q.available,
-            "bar_pct": q.bar_pct, "detail": q.detail}
+            "bar_pct": q.bar_pct, "detail": q.detail,
+            "extra": win(q.extra), "extra_label": q.extra_label}
 
 
 def _from_json(d: dict, stale: bool) -> CodexQuota:
@@ -198,7 +201,9 @@ def _from_json(d: dict, stale: bool) -> CodexQuota:
                       balance=d.get("balance", ""),
                       available=d.get("available", True),
                       bar_pct=d.get("bar_pct"),
-                      detail=d.get("detail", ""))
+                      detail=d.get("detail", ""),
+                      extra=win(d.get("extra")),
+                      extra_label=d.get("extra_label", ""))
 
 
 def get_quota(cache_ttl: int = CACHE_TTL) -> CodexQuota | None:
@@ -583,24 +588,15 @@ def _mirasim_windows(base: str) -> dict[str, QuotaWindow]:
 def query_mirasim_usage(base: str, token: str) -> CodexQuota:
     """Mirasim 桌面客户端: GET http://127.0.0.1:{hub}/v1/limits（无鉴权）。
 
-    MIRASIM 面板显示 5h + 7d 总窗；7d_fable 档位子额度由独立的
-    FABLE 面板展示（见 query_fable_usage）。
+    同一面板显示同源三窗口：5h、7d 总窗，账号带 7d_fable 档位
+    子额度（预算约为总周窗 53%，全用 Fable 时先撞墙）时以第三档
+    「F周」并列展示；无此窗口的账号自动只有两档。
     """
     wins = _mirasim_windows(base)
+    fable = wins.get("7d_fable")
     return CodexQuota(five_h=wins.get("5h"), one_w=wins.get("7d"),
-                      fetched_at=time.time())
-
-
-def query_fable_usage(base: str, token: str) -> CodexQuota:
-    """Mirasim 的 Fable 档位周子额度（7d_fable）独立面板。
-
-    与 MIRASIM 同源同缓存策略，只取 7d_fable：预算约为总周窗 53%，
-    全用 Fable 时先撞墙。账号无此窗口时抛错 → 面板自动隐藏。
-    """
-    win = _mirasim_windows(base).get("7d_fable")
-    if win is None:
-        raise KeyError("账号无 7d_fable 窗口")
-    return CodexQuota(five_h=None, one_w=win, fetched_at=time.time())
+                      fetched_at=time.time(),
+                      extra=fable, extra_label="F周" if fable else "")
 
 
 _QUERY_FNS = {
@@ -612,7 +608,6 @@ _QUERY_FNS = {
     "newapi": query_newapi_usage,
     "sub2api": query_sub2api_usage,
     "mirasim": query_mirasim_usage,
-    "fable": query_fable_usage,
 }
 
 
@@ -704,12 +699,6 @@ def load_coding_providers() -> list[tuple[str, str, str, str]]:
                       (os.environ.get("INKSCRY_MIRASIM_LABELS") or "").split(",")
                       if l.strip()), PROVIDER_LABELS["mirasim"])
         providers.setdefault("mirasim", (mira_base or "auto", "", label))
-        # Fable 档位周子额度（7d_fable）独立面板：账号没有该窗口时
-        # 查询抛错自动隐藏，不占面板位
-        flabel = next((l.strip() for l in
-                       (os.environ.get("INKSCRY_FABLE_LABELS") or "").split(",")
-                       if l.strip()), "FABLE")
-        providers.setdefault("fable", (mira_base or "auto", "", flabel))
     return [(key, *providers[key]) for key in providers]
 
 

@@ -150,6 +150,9 @@ class QuotaPanel:
     stale: bool = False                    # 数据为断网回退的过期缓存
     bar_pct: float | None = None           # 余额占比条（充值/剩余占比），None 不画
     detail: str = ""                       # 余额备注行：如 "赠 ¥1.00"
+    extra_label: str = ""                  # 第三档位（如 Mirasim 的 F周）
+    extra_pct: float | None = None
+    extra_reset: str = ""
 
 
 @dataclass
@@ -225,7 +228,10 @@ def _draw_quota_block(d: ImageDraw.ImageDraw, x0: int, w: int, by: int,
     if fill_w > 0:
         d.rectangle([x0 + 1, pbar_y + 1, x0 + 1 + fill_w, pbar_y + 7], fill=0)
     if reset:
-        txt = f"rst {reset}" if wide else reset
+        # mini 档装不下「MM-DD HH:MM」：跨天重置只显示日期部分
+        txt = reset.split(" ")[0] if mini and " " in reset else reset
+        if wide:
+            txt = f"rst {reset}"
         txt = _fit(d, txt, f_rst, w - 4)
         rx = x0
         if CENTER_CONTENT:
@@ -297,6 +303,8 @@ def _draw_quota_panel(d: ImageDraw.ImageDraw, dr: ImageDraw.ImageDraw,
         return
     blocks = [("5时", p.five_pct, p.five_reset),
               ("1周", p.week_pct, p.week_reset)]
+    if p.extra_pct is not None:   # 第三档位（如 F周）：三块横排落 mini 档
+        blocks.append((p.extra_label or "?", p.extra_pct, p.extra_reset))
     # 缺数据的档位不占位，剩下的档位独占全宽（全缺时保留 -- 占位）
     shown = [b for b in blocks if b[1] is not None] or blocks
     if horizontal:
