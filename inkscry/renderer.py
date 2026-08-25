@@ -180,13 +180,13 @@ def _panel_content_h(p: QuotaPanel) -> int:
 
 
 def _fmt_pct(pct: float, mini: bool = False) -> str:
-    """剩余百分比文本：保留一位小数；100 收敛为整数（最宽情形省一字符，
-    窄格双档横排才装得下）；mini 档宽度装不下小数，退回整数。"""
-    if mini:
+    """剩余百分比文本：按数据源真实精度显示——小数位非零才带一位小数
+    （Codex/Kimi 等上游是整数百分点粒度，挂「.0」是假精度；100 同理
+    收敛整数）；mini 档宽度装不下小数，一律整数。"""
+    txt = f"{pct:.1f}"
+    if mini or txt.endswith(".0"):
         return f"{pct:.0f}%"
-    if pct >= 99.95:
-        return "100%"
-    return f"{pct:.1f}%"
+    return txt + "%"
 
 
 def _draw_quota_block(d: ImageDraw.ImageDraw, x0: int, w: int, by: int,
