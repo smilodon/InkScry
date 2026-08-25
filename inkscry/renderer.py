@@ -245,6 +245,14 @@ def _draw_quota_panel(d: ImageDraw.ImageDraw, dr: ImageDraw.ImageDraw,
     d.line([(x0, y0 + TITLE_FONT_SIZE + 3), (x0 + w - 4, y0 + TITLE_FONT_SIZE + 3)], fill=0)
     dr.line([(x0, y0 + TITLE_FONT_SIZE + 3), (x0 + w - 4, y0 + TITLE_FONT_SIZE + 3)], fill=1)
     by = y0 + 26
+    if p.stale:
+        # 数据过期：旧数字有误导性（如昨天的「100%」），不再展示，
+        # 面板亮红色「数据过期」占位（三色屏红字 / 黑白屏黑字），
+        # 底栏同时列名指认
+        f_exp = _load_font(24, bold=True, cjk=True)
+        d.text((x0, by + 6), "数据过期", font=f_exp, fill=0)
+        dr.text((x0, by + 6), "数据过期", font=f_exp, fill=1)
+        return
     if p.balance:
         # 余额模式与档位块同构三段式：余额+金额行 / 占比条(可选) / 备注行(可选)
         pct_dx = 34   # 容纳「余额」CJK16（27px）并留间隙
