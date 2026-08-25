@@ -548,49 +548,59 @@ def _mirasim_bases() -> list[str]:
     return [f"http://127.0.0.1:{p}" for p in dict.fromkeys(ports)]
 
 
-def query_mirasim_usage(base: str, token: str) -> CodexQuota:
-    """Mirasim 桌面客户端: GET http://127.0.0.1:{hub}/v1/limits（无鉴权）。
-
-    base="auto" 时自动探测 hub 端口（漂移端口，见 _mirasim_bases）；
-    INKSCRY_MIRASIM_BASE 可显式固定。windows[]: name=5h/7d,
-    used/budget=积分, reset_at=epoch 秒。web 端口(4970)返回 SPA HTML、
-    其他端口返回无 windows 的 JSON，均被安全跳过。
-    """
+def _mirasim_limits(base: str) -> dict:
+    """取 /v1/limits 原始返回。base="auto" 时逐个探测漂移端口；
+    web 端口(4970)返回 SPA HTML、其他端口返回无 windows 的 JSON，
+    均被安全跳过。"""
     bases = [base] if base and base != "auto" else _mirasim_bases()
-    body = None
     for b in bases:
         try:
             data = _get_json(f"{b}/v1/limits", {"Accept": "application/json"})
         except Exception:   # 连接拒绝 / 非 JSON（HTML 兜底页）
             continue
         if isinstance(data, dict) and data.get("windows"):
-            body = data
-            break
-    if body is None:
-        raise OSError("未探测到 Mirasim 本机 hub 接口（客户端未运行？）")
-    fives: list[QuotaWindow] = []
-    weeks: list[QuotaWindow] = []
-    for w in body["windows"]:
+            return data
+    raise OSError("未探测到 Mirasim 本机 hub 接口（客户端未运行？）")
+
+
+def _mirasim_windows(base: str) -> dict[str, QuotaWindow]:
+    """windows[] → {name: QuotaWindow}。used/budget=积分,
+    reset_at=epoch 秒。"""
+    wins: dict[str, QuotaWindow] = {}
+    for w in _mirasim_limits(base)["windows"]:
         try:
             budget = float(w.get("budget") or 0)
             used = float(w.get("used") or 0)
         except (TypeError, ValueError):
             continue
-        if budget <= 0:
-            continue
-        win = QuotaWindow(used_pct=used / budget * 100,
-                          reset=_parse_reset(w.get("reset_at")))
-        name = str(w.get("name", ""))
-        if name.startswith("5h"):
-            fives.append(win)
-        elif name.startswith("7d"):
-            weeks.append(win)
-    # 同一窗口可能带档位子额度（如 7d_fable，预算 ≈ 总窗 53%）：
-    # 取已用百分比最高者——先撞墙的才是真实约束（全用 Fable 时
-    # 子额度消耗速度约为总窗的 1.9 倍）
-    five = max(fives, key=lambda w: w.used_pct, default=None)
-    weekly = max(weeks, key=lambda w: w.used_pct, default=None)
-    return CodexQuota(five_h=five, one_w=weekly, fetched_at=time.time())
+        if budget > 0:
+            wins[str(w.get("name", ""))] = QuotaWindow(
+                used_pct=used / budget * 100,
+                reset=_parse_reset(w.get("reset_at")))
+    return wins
+
+
+def query_mirasim_usage(base: str, token: str) -> CodexQuota:
+    """Mirasim 桌面客户端: GET http://127.0.0.1:{hub}/v1/limits（无鉴权）。
+
+    MIRASIM 面板显示 5h + 7d 总窗；7d_fable 档位子额度由独立的
+    FABLE 面板展示（见 query_fable_usage）。
+    """
+    wins = _mirasim_windows(base)
+    return CodexQuota(five_h=wins.get("5h"), one_w=wins.get("7d"),
+                      fetched_at=time.time())
+
+
+def query_fable_usage(base: str, token: str) -> CodexQuota:
+    """Mirasim 的 Fable 档位周子额度（7d_fable）独立面板。
+
+    与 MIRASIM 同源同缓存策略，只取 7d_fable：预算约为总周窗 53%，
+    全用 Fable 时先撞墙。账号无此窗口时抛错 → 面板自动隐藏。
+    """
+    win = _mirasim_windows(base).get("7d_fable")
+    if win is None:
+        raise KeyError("账号无 7d_fable 窗口")
+    return CodexQuota(five_h=None, one_w=win, fetched_at=time.time())
 
 
 _QUERY_FNS = {
@@ -602,6 +612,7 @@ _QUERY_FNS = {
     "newapi": query_newapi_usage,
     "sub2api": query_sub2api_usage,
     "mirasim": query_mirasim_usage,
+    "fable": query_fable_usage,
 }
 
 
@@ -693,6 +704,12 @@ def load_coding_providers() -> list[tuple[str, str, str, str]]:
                       (os.environ.get("INKSCRY_MIRASIM_LABELS") or "").split(",")
                       if l.strip()), PROVIDER_LABELS["mirasim"])
         providers.setdefault("mirasim", (mira_base or "auto", "", label))
+        # Fable 档位周子额度（7d_fable）独立面板：账号没有该窗口时
+        # 查询抛错自动隐藏，不占面板位
+        flabel = next((l.strip() for l in
+                       (os.environ.get("INKSCRY_FABLE_LABELS") or "").split(",")
+                       if l.strip()), "FABLE")
+        providers.setdefault("fable", (mira_base or "auto", "", flabel))
     return [(key, *providers[key]) for key in providers]
 
 
