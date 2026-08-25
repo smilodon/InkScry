@@ -141,15 +141,22 @@ def _state_signature(state: renderer.DashboardState) -> dict:
     底栏时间戳、状态字不参与——只有实质内容变化才触发全刷，
     状态字的更新搭数据变化的便车。
     """
+    def pct(v: float | None) -> str | None:
+        # 与 renderer._fmt_pct 同口径：一位小数、100 收敛整数
+        #（mini 档屏显更粗，按细口径比对只是偶尔多刷不会漏刷）
+        if v is None:
+            return None
+        return "100" if v >= 99.95 else f"{v:.1f}"
+
     return {
         "banner": state.status if state.status in ("waiting", "error") else "",
         # 与 renderer 的 6 面板上限一致：签名只收真正画上屏的面板，
         # 否则被裁掉的面板数据一变就会触发一次画面毫无变化的全刷
         "panels": [{
             "label": p.label,
-            "five": None if p.five_pct is None else f"{p.five_pct:.0f}",
+            "five": pct(p.five_pct),
             "five_reset": p.five_reset,
-            "week": None if p.week_pct is None else f"{p.week_pct:.0f}",
+            "week": pct(p.week_pct),
             "week_reset": p.week_reset,
             "balance": p.balance,
             "alert": p.alert,

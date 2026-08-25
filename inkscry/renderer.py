@@ -179,6 +179,16 @@ def _panel_content_h(p: QuotaPanel) -> int:
     return 70
 
 
+def _fmt_pct(pct: float, mini: bool = False) -> str:
+    """剩余百分比文本：保留一位小数；100 收敛为整数（最宽情形省一字符，
+    窄格双档横排才装得下）；mini 档宽度装不下小数，退回整数。"""
+    if mini:
+        return f"{pct:.0f}%"
+    if pct >= 99.95:
+        return "100%"
+    return f"{pct:.1f}%"
+
+
 def _draw_quota_block(d: ImageDraw.ImageDraw, x0: int, w: int, by: int,
                       label: str, pct: float | None, reset: str,
                       f_sm, tier_w: int | None = None) -> int:
@@ -200,14 +210,15 @@ def _draw_quota_block(d: ImageDraw.ImageDraw, x0: int, w: int, by: int,
     # 「标签 + 百分比」作为组合整体居中；进度条保持通栏作视觉锚点
     shift = 0
     if CENTER_CONTENT:
-        pct_txt = "--" if pct is None else f"{pct:.0f}%"
+        pct_txt = "--" if pct is None else _fmt_pct(pct, mini)
         group_w = pct_dx + d.textlength(pct_txt, font=f_pct)
         shift = max(0, int((w - group_w) / 2))
     d.text((x0 + shift, by + (2 if mini else 0)), label, font=f_lbl, fill=0)
     if pct is None:
         d.text((x0 + shift + pct_dx, by + pct_dy), "--", font=f_pct, fill=0)
         return by + 44
-    d.text((x0 + shift + pct_dx, by + pct_dy), f"{pct:.0f}%", font=f_pct, fill=0)
+    d.text((x0 + shift + pct_dx, by + pct_dy), _fmt_pct(pct, mini),
+           font=f_pct, fill=0)
     pbar_y = by + (24 if wide else (16 if mini else 20))
     d.rectangle([x0, pbar_y, x0 + w - 6, pbar_y + 8], outline=0)
     fill_w = int((w - 8) * max(0.0, min(100.0, pct)) / 100)
