@@ -145,6 +145,10 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
 备注行（DeepSeek 显示会过期的赠送余额「赠 ¥x」、NewAPI 显示「已用 $x」）；
 余额不足或账号不可用时金额变红并加 LOW BALANCE 红字。
 
+带第三档位的面板（如 Mirasim 的 F周）在网格中**独占一整行**
+（三块横排拿到 narrow 字号，保住一位小数与完整重置时间），
+计 2 个槽位；槽位总上限仍为 6，超出按排序截断。
+
 各家接口的坑（已在 `quota.py` 内处理）：
 
 - 智谱 GLM：`Authorization` **不加 Bearer 前缀**；`limits[]` 里 `unit=3` 为 5h
@@ -165,9 +169,9 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
   返回无 windows 的 JSON，都会被跳过）；`INKSCRY_MIRASIM_BASE` 可
   显式固定。`windows[]` 的 used/budget 为积分、reset_at 为 epoch 秒。
   账号带档位子额度（如 `7d_fable`，预算约为总周窗的一半、全用
-  Fable 时先撞墙）时，面板内以第三档「F周」与 5时/1周 并列显示
-  （同源数据同面板；三块横排自动落 mini 字号档，无此窗口的账号
-  只有两档）。非官方接口（思路对齐 mirasim-quota-widget），
+  Fable 时先撞墙）时，面板内以第三档「F周」与 5时/1周 并列显示，
+  且该面板自动在网格中展宽为一整行（同源数据同面板；无此窗口的
+  账号只有两档不展宽）。非官方接口（思路对齐 mirasim-quota-widget），
   客户端更新可能需适配
 - NEWAPI/SUB2API 支持**多实例**（多站点/多账号）：`BASE` 和 `TOKEN` 用
   逗号分隔按位置配对，如 `BASE=a,b` + `TOKEN=t1,t2` → `NEWAPI`/`NEWAPI2`

@@ -146,26 +146,22 @@ def _state_signature(state: renderer.DashboardState) -> dict:
     底栏时间戳、状态字不参与——只有实质内容变化才触发全刷，
     状态字的更新搭数据变化的便车。
     """
-    def pct(v: float | None, mini: bool = False) -> str | None:
-        # 与 renderer._fmt_pct 同口径：小数位非零才带小数；三档面板
-        # 落 mini 字号只显示整数，签名同步取整（否则小数抖动会触发
-        # 画面毫无变化的全刷）
+    def pct(v: float | None) -> str | None:
+        # 与 renderer._fmt_pct 同口径：小数位非零才带小数（带第三档的
+        # 宽面板独占整行、narrow 档，同样一位小数）
         if v is None:
             return None
-        if mini:
-            return f"{v:.0f}"
         txt = f"{v:.1f}"
         return f"{v:.0f}" if txt.endswith(".0") else txt
 
     def panel_sig(p: renderer.QuotaPanel) -> dict:
-        mini = p.extra_pct is not None   # 三块横排 → mini 档整数屏显
         return {
             "label": p.label,
-            "five": pct(p.five_pct, mini),
+            "five": pct(p.five_pct),
             "five_reset": p.five_reset,
-            "week": pct(p.week_pct, mini),
+            "week": pct(p.week_pct),
             "week_reset": p.week_reset,
-            "extra": pct(p.extra_pct, mini),
+            "extra": pct(p.extra_pct),
             "extra_label": p.extra_label,
             "extra_reset": p.extra_reset,
             "balance": p.balance,
@@ -177,9 +173,10 @@ def _state_signature(state: renderer.DashboardState) -> dict:
 
     return {
         "banner": state.status if state.status in ("waiting", "error") else "",
-        # 与 renderer 的 6 面板上限一致：签名只收真正画上屏的面板，
-        # 否则被裁掉的面板数据一变就会触发一次画面毫无变化的全刷
-        "panels": [panel_sig(p) for p in state.quota_panels[:6]],
+        # 与渲染同用 visible_panels 截断（宽面板计 2 槽位）：签名只收
+        # 真正画上屏的面板，否则被裁掉的面板一变就触发无意义全刷
+        "panels": [panel_sig(p)
+                   for p in renderer.visible_panels(state.quota_panels)],
     }
 
 

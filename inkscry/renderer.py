@@ -172,6 +172,21 @@ def _fit(d: ImageDraw.ImageDraw, text: str, font, max_w: int) -> str:
     return text
 
 
+def visible_panels(panels: list[QuotaPanel]) -> list[QuotaPanel]:
+    """真正画上屏的面板：槽位上限 6，带第三档的宽面板在网格中独占
+    一整行、计 2 个槽位；超出部分按排序截断（PANEL_ORDER 决定去留）。
+    渲染与屏显签名（cli._state_signature）共用，保证镜像口径一致。"""
+    out: list[QuotaPanel] = []
+    units = 0
+    for p in panels:
+        u = 2 if p.extra_pct is not None else 1
+        if units + u > 6:
+            break
+        out.append(p)
+        units += u
+    return out
+
+
 def _panel_content_h(p: QuotaPanel) -> int:
     """面板内容高度：统一按满配计（标题 26 + 块含底行 44）。用于垂直居中。
 
@@ -350,7 +365,7 @@ def render(state: DashboardState, width: int = WIDTH, height: int = HEIGHT) -> R
     else:
         mid_bottom = height - foot_h - 6
 
-    panels = state.quota_panels[:6]
+    panels = visible_panels(state.quota_panels)
     half = width // 2
     # 垂直居中的可视格底：末行/分列取底栏顶边，否则内容视觉上浮
     cell_floor = height - foot_h if not state.message else mid_bottom + 4
@@ -377,35 +392,50 @@ def render(state: DashboardState, width: int = WIDTH, height: int = HEIGHT) -> R
         for i in range(1, len(panels)):
             d.line([(i * col_w, mid_top), (i * col_w, mid_bottom)], fill=0)
     elif panels:
-        # 3 个及以上：2 列 × ⌈n/2⌉ 行网格（奇数个时末槽画 "+"），
-        # 面板内 5h/1w 左右横排；面板内容在行内垂直居中
-        cols = 2
-        rows = (len(panels) + 1) // 2
-        col_w = width // cols
+        # 3 个及以上：2 列网格。带第三档的宽面板独占一整行（三块横排
+        # 拿到 narrow 档宽度，保住一位小数），其余面板两两成行；
+        # 面板内容在行内垂直居中
+        rows_plan: list[list[QuotaPanel]] = []
+        for p in panels:
+            if p.extra_pct is not None:
+                rows_plan.append([p])            # 宽面板独占行
+            elif (rows_plan and len(rows_plan[-1]) == 1
+                  and rows_plan[-1][0].extra_pct is None):
+                rows_plan[-1].append(p)          # 补进半空行
+            else:
+                rows_plan.append([p])
+        rows = len(rows_plan)
+        col_w = width // 2
         row_h = (mid_bottom - mid_top) // rows
-        for i, p in enumerate(panels):
-            r, c = divmod(i, cols)
-            # 按实际内容高度在行内垂直居中；末行格底取底栏顶边，
-            # 否则末行内容视觉上浮
-            ch = _panel_content_h(p)
+        f_plus = _load_font(26)
+        for r, row in enumerate(rows_plan):
             cell_top = mid_top + r * row_h
+            # 末行格底取底栏顶边，否则末行内容视觉上浮
             cell_bottom = (mid_top + (r + 1) * row_h if r < rows - 1
                            else cell_floor)
-            y0 = cell_top + max(0, (cell_bottom - cell_top - ch) // 2)
-            _draw_quota_panel(d, dr, c * col_w + 8, col_w - 14,
-                              y0, p, f_sm, horizontal=True)
-        d.line([(col_w, mid_top), (col_w, mid_bottom)], fill=0)   # 列分隔竖线
-        for r in range(1, rows):                                  # 行分隔横线
+            wide_row = row[0].extra_pct is not None
+            for c, p in enumerate(row):
+                y0 = cell_top + max(0, (cell_bottom - cell_top
+                                        - _panel_content_h(p)) // 2)
+                if wide_row:
+                    _draw_quota_panel(d, dr, 8, width - 16, y0, p, f_sm,
+                                      horizontal=True)
+                else:
+                    _draw_quota_panel(d, dr, c * col_w + 8, col_w - 14,
+                                      y0, p, f_sm, horizontal=True)
+            if not wide_row:
+                # 列分隔竖线只画在双列行；半空行右格画 "+" 占位
+                line_bottom = (mid_top + (r + 1) * row_h if r < rows - 1
+                               else mid_bottom)
+                d.line([(col_w, cell_top), (col_w, line_bottom)], fill=0)
+                if len(row) == 1:
+                    pw = d.textlength("+", font=f_plus)
+                    cx = col_w + int((col_w - pw) / 2)
+                    cy = cell_top + (cell_bottom - cell_top - 26) // 2
+                    d.text((cx, cy), "+", font=f_plus, fill=0)
+        for r in range(1, rows):                 # 行分隔横线
             d.line([(0, mid_top + r * row_h),
                     (width, mid_top + r * row_h)], fill=0)
-        # 奇数个面板时末槽画 "+" 占位（提示还能再加一个面板）
-        if len(panels) % 2 == 1:
-            f_plus = _load_font(26)
-            pw = d.textlength("+", font=f_plus)
-            cx = col_w + int((col_w - pw) / 2)
-            cell_top = mid_top + (rows - 1) * row_h
-            cy = cell_top + (cell_floor - cell_top - 26) // 2
-            d.text((cx, cy), "+", font=f_plus, fill=0)
 
     # 工具行：仅无面板时占满全宽显示（单面板右半与网格末槽均为 "+" 占位）
     if not panels:
