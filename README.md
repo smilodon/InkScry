@@ -208,7 +208,9 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
 几次（≈数据真实变化次数），数据新鲜度 ≤ 检查间隔。
 
 三种跑法，共用一套配置（`INKSCRY_SYNC_INTERVAL` 检查间隔秒数、
-`INKSCRY_QUIET` 静默时段、`INKSCRY_HEARTBEAT` 心跳，见 .env 注释）：
+`INKSCRY_QUIET` 静默时段、`INKSCRY_HEARTBEAT` 心跳、`INKSCRY_HYSTERESIS`
+滞回带——百分比与屏上差距不足 N 个点不刷屏，小变化累计越带才刷，
+默认 0 关闭；见 .env 注释）：
 
 - **macOS 菜单栏程序（推荐）**：`pip install '.[menubar]'` 后运行
   `inkscry-bar`。菜单栏常年一个「墨」字（同步中「墨…」、失败

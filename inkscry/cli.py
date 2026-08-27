@@ -202,6 +202,49 @@ def _save_last_sig(sig: dict) -> None:
     _last_sig_file().write_text(json.dumps(sig, ensure_ascii=False))
 
 
+# ── 滞回带：百分比小变化不刷屏 ──────────────────────────
+# 比对基准始终是「屏上内容镜像」而非上次查询值：小于带宽的变化会累计，
+# 越过带宽那一轮才刷，不会被逐轮四舍五入吃掉。
+
+def _hysteresis_band() -> float:
+    """INKSCRY_HYSTERESIS（百分点，默认 0=关闭）：百分比与屏上值的
+    差距不足带宽时视为无变化。"""
+    try:
+        return max(0.0, float(os.environ.get("INKSCRY_HYSTERESIS", "0")))
+    except ValueError:
+        return 0.0
+
+
+_PCT_SIG_KEYS = ("five", "week", "extra")
+
+
+def _sig_changed(new: dict, old) -> bool:
+    """屏显签名是否值得一次全刷：结构/文案逐字比；百分比字段在滞回带
+    内视为不变。"""
+    if not isinstance(old, dict):
+        return True
+    band = _hysteresis_band()
+    if band <= 0:
+        return new != old
+    if new.get("banner") != old.get("banner"):
+        return True
+    new_panels, old_panels = new.get("panels", []), old.get("panels", [])
+    if not isinstance(old_panels, list) or len(new_panels) != len(old_panels):
+        return True
+    for np_, op in zip(new_panels, old_panels):
+        for key, value in np_.items():
+            old_value = op.get(key)
+            if key in _PCT_SIG_KEYS and value is not None and old_value is not None:
+                try:
+                    if abs(float(value) - float(old_value)) < band:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            if value != old_value:
+                return True
+    return False
+
+
 def build_menu_sig_fast() -> dict:
     """两段刷新的快速段屏显签名：CODEX 只读缓存（它的接口要 ~6s），
     其余供应商正常联网（并发查询，合计 <1s）——先把新鲜数据摆上菜单，
@@ -303,7 +346,7 @@ async def sync_once(address: str | None = None, save: str | None = None,
     state = build_state("sync", "", {})
     state.status = _infer_status()
     sig = _state_signature(state)
-    changed = sig != _load_last_sig()
+    changed = _sig_changed(sig, _load_last_sig())
     if not force and not changed and not _heartbeat_due():
         msg = "数据无变化，未刷屏"
         log.info("同步：%s", msg)
@@ -373,9 +416,9 @@ async def run(args: argparse.Namespace) -> int:
         state = build_state(args.event, args.message or "", hook,
                             with_quota=not args.no_quota)
         # 普通事件（Stop 等）：数据与告警横幅都和屏上一致就不值得一次
-        # 全刷（比对口径与 --sync 相同）；等待确认/出错类必推不比
+        # 全刷（比对口径与 --sync 相同，含滞回带）；等待确认/出错类必推不比
         if args.event not in _PRIORITY_EVENTS and not args.no_ble:
-            if _state_signature(state) == _load_last_sig():
+            if not _sig_changed(_state_signature(state), _load_last_sig()):
                 log.info("屏显数据无变化，跳过 %s 刷屏", args.event)
                 return 0
 
