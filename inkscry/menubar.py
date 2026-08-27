@@ -30,10 +30,29 @@ from . import ble, cli, config, quota
 
 try:
     import rumps
+    import objc
+    from Foundation import NSObject
 except ImportError:  # 非 macOS 或未装可选依赖
     rumps = None
 
 log = logging.getLogger("inkscry.bar")
+
+if rumps:
+    class _MenuOpenDelegate(NSObject):
+        """NSMenu delegate：菜单展开瞬间回调（rumps 未暴露此事件）。"""
+
+        def initWithCallback_(self, callback):
+            self = objc.super(_MenuOpenDelegate, self).init()
+            if self is None:
+                return None
+            self._callback = callback
+            return self
+
+        def menuWillOpen_(self, _menu):
+            try:
+                self._callback()
+            except Exception:   # 回调异常不能炸 AppKit 事件循环
+                log.exception("菜单展开回调失败")
 
 TITLE = "墨"
 TITLE_BUSY = "墨…"
@@ -79,6 +98,15 @@ class InkScryBar(rumps.App if rumps else object):
         self._sync_timer: rumps.Timer | None = None
         self._set_interval(cli._env_interval())   # 建定时器；NSTimer 启动即触发首轮
         rumps.Timer(self._apply_pending, 1).start()
+        # 菜单展开即补一轮同步（正常路径：缓存/比对/防抖俱在，
+        # 保证菜单数字新鲜、屏幕只在真有变化时才刷）
+        nsmenu = getattr(self.menu, "_menu", None)
+        if nsmenu is not None and nsmenu.delegate() is None:
+            self._menu_delegate = _MenuOpenDelegate.alloc().initWithCallback_(
+                self.on_menu_open)
+            nsmenu.setDelegate_(self._menu_delegate)
+        else:
+            log.warning("未能挂载菜单展开回调（rumps 内部结构变化？）")
 
     # ── 菜单动作（主线程）─────────────────────────────────
     def on_tick(self, _timer) -> None:
@@ -91,6 +119,11 @@ class InkScryBar(rumps.App if rumps else object):
 
     def on_refresh(self, _item) -> None:
         self._spawn(self._sync_work, force=True)
+
+    def on_menu_open(self) -> None:
+        """菜单展开：即时补一轮同步（暂停时不动；_busy 撞车自动跳过）。"""
+        if not self.paused:
+            self._spawn(self._sync_work, force=False)
 
     def on_pause(self, item) -> None:
         self.paused = not self.paused

@@ -225,6 +225,8 @@ def _panel_line(p: dict) -> str:
             parts.append(f"5时 {p['five']}%")
         if p.get("week") is not None:
             parts.append(f"1周 {p['week']}%")
+        if p.get("extra") is not None:
+            parts.append(f"{p.get('extra_label') or '?'} {p['extra']}%")
     body = " · ".join(parts) or "--"
     warn = "⚠ " if p.get("stale") or p.get("alert") else ""
     return f"{warn}{p['label']}  {body}"
