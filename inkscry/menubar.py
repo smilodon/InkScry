@@ -209,6 +209,14 @@ class InkScryBar(rumps.App if rumps else object):
     def _sync_work(self, force: bool) -> None:
         stamp = time.strftime("%H:%M")
         try:
+            # 两段刷新：快供应商（并发 <1s）先上菜单，
+            # CODEX 接口 ~6s，随完整一轮随后覆盖
+            try:
+                fast = cli.build_menu_sig_fast()
+                self._pending = (f"{stamp} 刷新中…（CODEX 较慢，稍候）",
+                                 fast, False, "partial")
+            except Exception:
+                log.exception("快速段刷新失败，继续完整同步")
             msg, sig = asyncio.run(cli.sync_once(save=str(cli.PREVIEW_PNG),
                                                  force=force))
             self._pending = (f"{stamp} {msg}", sig or None, False, None)
@@ -248,7 +256,9 @@ class InkScryBar(rumps.App if rumps else object):
             self.pause_item.title = "恢复自动同步"
             self._last_sig = {}
         self._rebuild(msg)
-        self.title = TITLE_ERROR if error else TITLE
+        # partial（两段刷新的快速段）：任务仍在跑，保持忙碌标题
+        self.title = (TITLE_BUSY if extra == "partial"
+                      else TITLE_ERROR if error else TITLE)
 
     def _rebuild(self, status: str) -> None:
         items: list = [rumps.MenuItem(status)]

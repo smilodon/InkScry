@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -92,10 +93,14 @@ def build_state(event: str, message: str, hook: dict,
         state.tool_lines = info.tool_calls[-4:]
 
     if with_quota:
-        q = quota.get_quota()
+        # Codex 接口慢（~6s，走代理），与各供应商并发查询重叠进行
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            codex = pool.submit(quota.get_quota)
+            coding = quota.get_coding_quotas()
+            q = codex.result()
         if q:
             state.quota_panels.append(_quota_panel("CODEX", q))
-        for label, cq in quota.get_coding_quotas():
+        for label, cq in coding:
             state.quota_panels.append(_quota_panel(label, cq))
         rank = quota.panel_order_rank()
         if rank:
@@ -195,6 +200,23 @@ def _load_last_sig() -> dict | None:
 def _save_last_sig(sig: dict) -> None:
     quota.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _last_sig_file().write_text(json.dumps(sig, ensure_ascii=False))
+
+
+def build_menu_sig_fast() -> dict:
+    """两段刷新的快速段屏显签名：CODEX 只读缓存（它的接口要 ~6s），
+    其余供应商正常联网（并发查询，合计 <1s）——先把新鲜数据摆上菜单，
+    完整一轮（含 CODEX 与推送比对）随后覆盖。仅用于菜单展示，不落镜像。
+    """
+    state = renderer.DashboardState(status=_infer_status(), message="")
+    q = quota.get_quota(cache_ttl=10 ** 9)   # 缓存专取，不联网
+    if q:
+        state.quota_panels.append(_quota_panel("CODEX", q))
+    for label, cq in quota.get_coding_quotas():
+        state.quota_panels.append(_quota_panel(label, cq))
+    rank = quota.panel_order_rank()
+    if rank:
+        state.quota_panels.sort(key=lambda p: rank.get(p.label, len(rank)))
+    return _state_signature(state)
 
 
 # ── 菜单栏（macOS）/ 托盘（Windows、Linux）共用的展示工具 ──────

@@ -14,12 +14,14 @@ Mirasim（桌面客户端本机接口）；
 
 from __future__ import annotations
 
+import concurrent.futures
 import gzip
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -704,6 +706,10 @@ def load_coding_providers() -> list[tuple[str, str, str, str]]:
     return [(key, *providers[key]) for key in providers]
 
 
+# newapi 的 User-ID 通过 env 传递（见 _provider_quota），并发查询时加锁
+_NEWAPI_LOCK = threading.Lock()
+
+
 def _newapi_uid(key: str) -> str | None:
     """New-Api-User 头值：INKSCRY_NEWAPI_USER_ID 同样支持逗号列表，
     第 i 个值对应第 i 个实例；没配够按最后一个（同站多账号常见同 ID）。"""
@@ -733,10 +739,15 @@ def _provider_quota(key: str, base: str, token: str,
         cached.stale = False
         return cached
     pid = _base_pid(key)
-    if pid == "newapi":   # 按实例注入 New-Api-User（query_newapi_usage 读取）
-        os.environ["INKSCRY_NEWAPI_USER_ID"] = _newapi_uid(key) or ""
     try:
-        quota = _QUERY_FNS[pid](base, token)
+        if pid == "newapi":
+            # 按实例注入 New-Api-User（query_newapi_usage 读 env）：
+            # env 是进程共享的，并发查询多实例时必须与查询原子化
+            with _NEWAPI_LOCK:
+                os.environ["INKSCRY_NEWAPI_USER_ID"] = _newapi_uid(key) or ""
+                quota = _QUERY_FNS[pid](base, token)
+        else:
+            quota = _QUERY_FNS[pid](base, token)
     except (OSError, urllib.error.URLError, KeyError, ValueError,
             json.JSONDecodeError):
         return cached
@@ -749,10 +760,16 @@ def _provider_quota(key: str, base: str, token: str,
 
 
 def get_coding_quotas(cache_ttl: int = CACHE_TTL) -> list[tuple[str, CodexQuota]]:
-    """所有已配置 Coding Plan 供应商的额度 [(面板标签, 额度)]。"""
-    results = []
-    for key, base, token, label in load_coding_providers():
-        q = _provider_quota(key, base, token, cache_ttl)
-        if q:
-            results.append((label, q))
-    return results
+    """所有已配置 Coding Plan 供应商的额度 [(面板标签, 额度)]。
+
+    各家并发查询：接口互不相干，串行会把一轮耗时拉成各家之和
+    （某家挂起还要白等 15s 超时），并发后 ≈ 最慢一家。
+    """
+    providers = load_coding_providers()
+    if not providers:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(providers))) as pool:
+        quotas = list(pool.map(
+            lambda p: _provider_quota(p[0], p[1], p[2], cache_ttl), providers))
+    return [(label, q) for (*_, label), q in zip(providers, quotas) if q]
