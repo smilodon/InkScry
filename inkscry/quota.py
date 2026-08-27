@@ -737,8 +737,11 @@ _mirasim_listener_started = False
 
 
 def start_mirasim_listener() -> None:
-    """常驻进程调用一次：后台线程长连 Mirasim 渲染层 WS，把 relay.usage
-    推送实时写进 mirasim 额度缓存文件（对 menubar/tray/hook 全生效）。
+    """常驻进程调用一次：后台线程长连 Mirasim 渲染层 WS，把推送实时
+    写进额度缓存文件（对 menubar/tray/hook 全生效）：
+      - relay.usage → mirasim 缓存（5h/7d/7d_fable 三窗口）
+      - usage(agent=codex) → codex 缓存（Mirasim MITM 从 Codex 真实
+        响应头捕获的窗口；新鲜时同步轮免查 chatgpt.com 慢接口）
     未安装 Mirasim 时不启动；客户端未运行时低频重试。"""
     global _mirasim_listener_started
     if _mirasim_listener_started:
@@ -749,6 +752,54 @@ def start_mirasim_listener() -> None:
     _mirasim_listener_started = True
     threading.Thread(target=_mirasim_listen_loop, daemon=True,
                      name="mirasim-ws").start()
+
+
+def _quota_sig(q: CodexQuota) -> tuple:
+    """防重播签名：三窗口的百分比与重置时间（不含 fetched_at）。"""
+    return tuple(sorted(
+        (k, round(v.used_pct, 3), v.reset) for k, v in
+        (("5h", q.five_h), ("7d", q.one_w), ("x", q.extra)) if v))
+
+
+def _cache_write_atomic(path: Path, q: CodexQuota) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(_to_json(q)), "utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _codex_usage_to_quota(entry: dict) -> CodexQuota | None:
+    """WS usage 消息里 agent=codex 的条目 → CodexQuota。
+
+    fetched_at 取 capturedAt（数据被捕获的时刻）而非落地时刻：
+    该数据随 Codex 真实调用而更新，闲置时自动老化，缓存过期后
+    同步轮回退官方接口直查，不会因旁听通道停在旧数字上。
+    gpt-reserve 备用池不上屏（0% 占用，且宽面板会多吃一个槽位）。
+    """
+    if not entry.get("ok") or not entry.get("windows"):
+        return None
+    five = week = None
+    for w in entry["windows"]:
+        if not isinstance(w, dict) or w.get("detail") == "gpt-reserve":
+            continue
+        try:
+            used = float(w["usedPercent"])
+        except (TypeError, ValueError):
+            continue
+        win = QuotaWindow(used_pct=used, reset=_parse_reset(w.get("resetAt")))
+        if w.get("label") == "5h":
+            five = win
+        elif w.get("label") == "7d":
+            week = win
+    if five is None and week is None:
+        return None
+    captured = _parse_reset(entry.get("capturedAt"))
+    return CodexQuota(five_h=five, one_w=week,
+                      fetched_at=captured.timestamp() if captured
+                      else time.time())
 
 
 def _mirasim_listen_loop() -> None:
@@ -767,32 +818,38 @@ def _mirasim_listen_loop() -> None:
 
 def _mirasim_listen_once(base: str) -> None:
     ws_url = base.replace("http", "ws", 1) + "/ws"
-    last_written: tuple | None = None
+    last_mirasim: tuple | None = None
     for text in _ws_texts(ws_url, time.time() + 7 * 86400):
         try:
             msg = json.loads(text)
         except ValueError:
             continue
-        usage = (msg.get("relay") or {}).get("usage") \
-            if isinstance(msg, dict) else None
-        if not (isinstance(usage, dict) and usage.get("ok")
-                and usage.get("windows")):
+        if not isinstance(msg, dict):
             continue
-        q = _windows_to_quota(usage["windows"])
-        sig = tuple(sorted(
-            (k, round(v.used_pct, 3), v.reset) for k, v in
-            (("5h", q.five_h), ("7d", q.one_w), ("7d_fable", q.extra)) if v))
-        if sig == last_written:
-            continue   # 同一批数据的重播不落盘
-        try:
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = CACHE_DIR / "mirasim_quota.json.tmp"
-            tmp.write_text(json.dumps(_to_json(q)), "utf-8")
-            os.replace(tmp, CACHE_DIR / "mirasim_quota.json")   # 原子替换
-            last_written = sig
-            log.debug("Mirasim 额度推送已落缓存")
-        except OSError:
-            pass
+        relay_usage = (msg.get("relay") or {}).get("usage")
+        if isinstance(relay_usage, dict) and relay_usage.get("ok") \
+                and relay_usage.get("windows"):
+            q = _windows_to_quota(relay_usage["windows"])
+            sig = _quota_sig(q)
+            if sig != last_mirasim:
+                _cache_write_atomic(CACHE_DIR / "mirasim_quota.json", q)
+                last_mirasim = sig
+                log.debug("Mirasim 额度推送已落缓存")
+        if msg.get("type") == "usage":
+            for entry in msg.get("usage") or []:
+                if not isinstance(entry, dict) or entry.get("agent") != "codex":
+                    continue
+                q = _codex_usage_to_quota(entry)
+                if q is None:
+                    continue
+                try:   # 缓存里已有更新鲜的（如刚直查的）就不回滚
+                    old_at = float(json.loads(
+                        CACHE_FILE.read_text())["fetched_at"])
+                except (OSError, ValueError, KeyError, TypeError):
+                    old_at = 0.0
+                if q.fetched_at > old_at:
+                    _cache_write_atomic(CACHE_FILE, q)
+                    log.debug("Codex 窗口捕获已落缓存（capturedAt 口径）")
 
 
 _QUERY_FNS = {
