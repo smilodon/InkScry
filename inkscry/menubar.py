@@ -136,11 +136,14 @@ class InkScryBar(rumps.App if rumps else object):
         self._spawn(self._sync_work, force=True)
 
     def on_menu_open(self) -> None:
-        """菜单展开：按设定的最小间隔补一轮同步（暂停时不动；_busy 撞车自动跳过）。"""
+        """菜单展开：按设定的最小间隔补一轮同步（暂停时不动）。"""
         if self.paused:
             return
         now = time.monotonic()
         if now - self._last_menu_open < self._menu_open_min:
+            # 本轮不补，但刚好有任务在跑：如实亮出「刷新中」
+            if self._busy.locked():
+                self._rebuild(f"{time.strftime('%H:%M')} 刷新中…")
             return
         self._last_menu_open = now
         self._spawn(self._sync_work, force=False)
@@ -175,7 +178,7 @@ class InkScryBar(rumps.App if rumps else object):
                           "请先「立即刷新」")
 
     def on_clear(self, _item) -> None:
-        self._spawn(self._clear_work)
+        self._spawn(self._clear_work, busy_msg="清屏中…")
 
     def on_edit_env(self, _item) -> None:
         env = config.PROJECT_ROOT / ".env"
@@ -194,10 +197,12 @@ class InkScryBar(rumps.App if rumps else object):
         self._rebuild(f"{time.strftime('%H:%M')} 配置已重载")
         self._set_interval(cli._env_interval())   # 顺带按新配置重建定时器并同步一轮
 
-    def _spawn(self, work, **kwargs) -> None:
+    def _spawn(self, work, busy_msg: str = "刷新中…", **kwargs) -> None:
         if not self._busy.acquire(blocking=False):
             return   # 上一个 BLE 任务还没跑完
         self.title = TITLE_BUSY
+        # 状态行即时反馈，不必等工作线程跑完（菜单开着也能原地更新）
+        self._rebuild(f"{time.strftime('%H:%M')} {busy_msg}")
         threading.Thread(target=work, kwargs=kwargs, daemon=True).start()
 
     # ── 工作线程（BLE + 网络，可能十几秒）──────────────────
