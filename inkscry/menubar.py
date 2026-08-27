@@ -69,6 +69,9 @@ class InkScryBar(rumps.App if rumps else object):
     def __init__(self) -> None:
         super().__init__(TITLE, quit_button=None)
         quota.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        # Mirasim 额度是推送制（WS 长连）：启动监听线程实时落缓存，
+        # 同步轮只读缓存即可，不必每次冷连接等推送
+        quota.start_mirasim_listener()
 
         # 常驻菜单项只建一次，跨 _rebuild 复用（保住回调与勾选态）
         self.refresh_item = rumps.MenuItem("立即刷新", callback=self.on_refresh)

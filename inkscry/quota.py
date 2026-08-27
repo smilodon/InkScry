@@ -14,22 +14,28 @@ Mirasim（桌面客户端本机接口）；
 
 from __future__ import annotations
 
+import base64
 import concurrent.futures
 import gzip
 import json
+import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from . import config
+
+log = logging.getLogger("inkscry.quota")
 
 AUTH_FILE = Path.home() / ".codex" / "auth.json"
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
@@ -530,10 +536,10 @@ def query_sub2api_usage(base: str, token: str) -> CodexQuota:
 
 
 def _mirasim_bases() -> list[str]:
-    """枚举本机 Mirasim 进程的回环监听端口（hub 端口随启动漂移）。
+    """枚举本机 Mirasim 进程的回环监听端口（服务端口随启动漂移）。
 
     对齐 mirasim-quota-widget 的 probe 思路：按平台列出进程的
-    127.0.0.1 LISTEN 端口，交给调用方逐个探测 /v1/limits。
+    127.0.0.1 LISTEN 端口，交给调用方逐个探测 /api/health。
     """
     cmds = {
         "darwin": ["lsof", "-a", "-iTCP", "-sTCP:LISTEN", "-nP",
@@ -557,50 +563,236 @@ def _mirasim_bases() -> list[str]:
     return [f"http://127.0.0.1:{p}" for p in dict.fromkeys(ports)]
 
 
-def _mirasim_limits(base: str) -> dict:
-    """取 /v1/limits 原始返回。base="auto" 时逐个探测漂移端口；
-    web 端口(4970)返回 SPA HTML、其他端口返回无 windows 的 JSON，
-    均被安全跳过。"""
-    bases = [base] if base and base != "auto" else _mirasim_bases()
-    for b in bases:
+# Mirasim 0.0.225 起逐步封死本机 HTTP 接口，0.0.227 起 /v1/limits 彻底
+# 下线（hub 变成带令牌的 shell 自动化 API，只有窗口操控 op）。目前仅存的
+# 数据通道是渲染层 WebSocket（ws://{服务端口}/ws，回环无鉴权）：连上后
+# 服务端主动推 relay.usage（5h/7d/7d_fable 三窗口的 usedPercent/resetAt）
+# 与 usage（各 agent 窗口）消息。以下是一个只读极简 WS 客户端。
+
+_MIRASIM_WS_WAIT = 10.0   # 等 relay.usage 推送的最长秒数（服务端几秒一跳）
+_mirasim_ws_base: str | None = None   # 进程内记住探测成功的服务端口
+
+
+def _mirasim_server_base(base: str) -> str:
+    """定位 Mirasim 服务端口：/api/health 报 name=mirasim 的才是
+    （shell 端口回 401，其他端口不回此 JSON）。"""
+    global _mirasim_ws_base
+    if base and base != "auto":
+        return base.rstrip("/")
+    candidates = ([_mirasim_ws_base] if _mirasim_ws_base else []) \
+        + [b for b in _mirasim_bases() if b != _mirasim_ws_base]
+    for b in candidates:
         try:
-            data = _get_json(f"{b}/v1/limits", {"Accept": "application/json"})
-        except Exception:   # 连接拒绝 / 非 JSON（HTML 兜底页）
+            data = _get_json(f"{b}/api/health", {"Accept": "application/json"})
+        except Exception:   # 连接拒绝 / 非 JSON（SPA 兜底页）
             continue
-        if isinstance(data, dict) and data.get("windows"):
-            return data
-    raise OSError("未探测到 Mirasim 本机 hub 接口（客户端未运行？）")
+        if isinstance(data, dict) and data.get("name") == "mirasim":
+            _mirasim_ws_base = b
+            return b
+    _mirasim_ws_base = None
+    raise OSError("未探测到 Mirasim 本机服务端口（客户端未运行？）")
 
 
-def _mirasim_windows(base: str) -> dict[str, QuotaWindow]:
-    """windows[] → {name: QuotaWindow}。used/budget=积分,
-    reset_at=epoch 秒。"""
+def _ws_texts(url: str, deadline: float):
+    """极简只读 WebSocket 客户端（stdlib 零依赖）：握手后逐帧 yield 文本
+    消息，直到 deadline。ping 自动回 pong（客户端帧按 RFC 带掩码）。"""
+    u = urllib.parse.urlparse(url)
+    sock = socket.create_connection((u.hostname, u.port or 80), timeout=5)
+    try:
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall((f"GET {u.path or '/'} HTTP/1.1\r\nHost: {u.netloc}\r\n"
+                      "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                      f"Sec-WebSocket-Key: {key}\r\n"
+                      "Sec-WebSocket-Version: 13\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise OSError("WS 握手被对端断开")
+            buf += chunk
+        head, _, buf = buf.partition(b"\r\n\r\n")
+        if b" 101 " not in head.split(b"\r\n", 1)[0]:
+            raise OSError("WS 握手被拒绝: " +
+                          head.split(b"\r\n", 1)[0].decode("utf-8", "replace"))
+        sock.settimeout(1.0)
+
+        def fill(n: int) -> bytes:
+            nonlocal buf
+            while len(buf) < n:
+                if time.time() > deadline:
+                    raise TimeoutError
+                try:
+                    chunk = sock.recv(65536)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    raise OSError("WS 连接被对端关闭")
+                buf += chunk
+            out, buf = buf[:n], buf[n:]
+            return out
+
+        def send_frame(opcode: int, payload: bytes = b"") -> None:
+            mask = os.urandom(4)
+            n = len(payload)
+            if n < 126:
+                header = bytes([0x80 | opcode, 0x80 | n])
+            elif n < 65536:
+                header = bytes([0x80 | opcode, 0x80 | 126]) + n.to_bytes(2, "big")
+            else:
+                header = bytes([0x80 | opcode, 0x80 | 127]) + n.to_bytes(8, "big")
+            masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            sock.sendall(header + mask + masked)
+
+        frag = bytearray()
+        while time.time() < deadline:
+            h = fill(2)
+            fin, opcode = h[0] & 0x80, h[0] & 0x0F
+            ln = h[1] & 0x7F
+            if ln == 126:
+                ln = int.from_bytes(fill(2), "big")
+            elif ln == 127:
+                ln = int.from_bytes(fill(8), "big")
+            mask = fill(4) if h[1] & 0x80 else None
+            payload = fill(ln) if ln else b""
+            if mask:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if opcode == 0x9:        # ping → pong
+                send_frame(0xA, payload)
+            elif opcode == 0x8:      # close
+                send_frame(0x8)
+                return
+            elif opcode in (0x1, 0x0):   # text / continuation
+                frag += payload
+                if fin:
+                    yield bytes(frag).decode("utf-8", "replace")
+                    frag.clear()
+            # 二进制等其余帧忽略
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def _mirasim_relay_usage(base: str) -> dict:
+    """从渲染层 WS 抓 relay.usage 推送（5h/7d/7d_fable 的 usedPercent
+    与 resetAt，服务端实时刷新）。"""
+    http_base = _mirasim_server_base(base)
+    ws_url = http_base.replace("http", "ws", 1) + "/ws"
+    deadline = time.time() + _MIRASIM_WS_WAIT
+    gen = _ws_texts(ws_url, deadline)
+    try:
+        for text in gen:
+            try:
+                msg = json.loads(text)
+            except ValueError:
+                continue
+            usage = (msg.get("relay") or {}).get("usage") \
+                if isinstance(msg, dict) else None
+            if isinstance(usage, dict) and usage.get("ok") \
+                    and usage.get("windows"):
+                return usage
+    except (OSError, TimeoutError):
+        pass
+    finally:
+        gen.close()
+    raise OSError("Mirasim WS 已连接但未等到额度推送（版本又不兼容？）")
+
+
+def _windows_to_quota(windows: list) -> CodexQuota:
+    """relay.usage.windows[] → CodexQuota：5h/7d 主窗 + 7d_fable 第三档。
+    usedPercent 直接是百分比（服务端给到一位小数），resetAt 为 ISO 时间。"""
     wins: dict[str, QuotaWindow] = {}
-    for w in _mirasim_limits(base)["windows"]:
+    for w in windows:
         try:
-            budget = float(w.get("budget") or 0)
-            used = float(w.get("used") or 0)
-        except (TypeError, ValueError):
+            used = float(w["usedPercent"])
+        except (TypeError, ValueError, KeyError):
             continue
-        if budget > 0:
-            wins[str(w.get("name", ""))] = QuotaWindow(
-                used_pct=used / budget * 100,
-                reset=_parse_reset(w.get("reset_at")))
-    return wins
-
-
-def query_mirasim_usage(base: str, token: str) -> CodexQuota:
-    """Mirasim 桌面客户端: GET http://127.0.0.1:{hub}/v1/limits（无鉴权）。
-
-    同一面板显示同源三窗口：5h、7d 总窗，账号带 7d_fable 档位
-    子额度（预算约为总周窗 53%，全用 Fable 时先撞墙）时以第三档
-    「F周」并列展示；无此窗口的账号自动只有两档。
-    """
-    wins = _mirasim_windows(base)
+        wins[str(w.get("label", ""))] = QuotaWindow(
+            used_pct=used, reset=_parse_reset(w.get("resetAt")))
     fable = wins.get("7d_fable")
     return CodexQuota(five_h=wins.get("5h"), one_w=wins.get("7d"),
                       fetched_at=time.time(),
                       extra=fable, extra_label="F周" if fable else "")
+
+
+def query_mirasim_usage(base: str, token: str) -> CodexQuota:
+    """Mirasim 桌面客户端：旁听 ws://127.0.0.1:{服务端口}/ws 的
+    relay.usage 推送（0.0.227 起 /v1/limits 已下线，WS 是仅存通道）。
+
+    推送制通道与轮询不合拍（relay 数据 ≤60s 一跳，冷连接可能等不到），
+    常驻进程应改用 start_mirasim_listener() 长连落缓存；本函数作为
+    无常驻进程时的冷路径兜底（等 _MIRASIM_WS_WAIT 秒，等不到抛错走
+    过期缓存）。
+
+    同一面板显示同源三窗口：5h、7d 总窗，账号带 7d_fable 档位
+    子额度（全用 Fable 时先撞墙）时以第三档「F周」并列展示；
+    无此窗口的账号自动只有两档。
+    """
+    return _windows_to_quota(_mirasim_relay_usage(base)["windows"])
+
+
+# ── 常驻 WS 监听（菜单栏/托盘启动；hook 等短进程共享其写出的缓存）──────
+_mirasim_listener_started = False
+
+
+def start_mirasim_listener() -> None:
+    """常驻进程调用一次：后台线程长连 Mirasim 渲染层 WS，把 relay.usage
+    推送实时写进 mirasim 额度缓存文件（对 menubar/tray/hook 全生效）。
+    未安装 Mirasim 时不启动；客户端未运行时低频重试。"""
+    global _mirasim_listener_started
+    if _mirasim_listener_started:
+        return
+    if not (os.environ.get("INKSCRY_MIRASIM_BASE")
+            or (Path.home() / ".mirasim").exists()):
+        return
+    _mirasim_listener_started = True
+    threading.Thread(target=_mirasim_listen_loop, daemon=True,
+                     name="mirasim-ws").start()
+
+
+def _mirasim_listen_loop() -> None:
+    while True:
+        try:
+            base = _mirasim_server_base("auto")
+        except OSError:
+            time.sleep(60)   # 客户端未运行：低频重试
+            continue
+        try:
+            _mirasim_listen_once(base)
+        except Exception as e:
+            log.debug("Mirasim WS 断开，5s 后重连: %s", e)
+            time.sleep(5)
+
+
+def _mirasim_listen_once(base: str) -> None:
+    ws_url = base.replace("http", "ws", 1) + "/ws"
+    last_written: tuple | None = None
+    for text in _ws_texts(ws_url, time.time() + 7 * 86400):
+        try:
+            msg = json.loads(text)
+        except ValueError:
+            continue
+        usage = (msg.get("relay") or {}).get("usage") \
+            if isinstance(msg, dict) else None
+        if not (isinstance(usage, dict) and usage.get("ok")
+                and usage.get("windows")):
+            continue
+        q = _windows_to_quota(usage["windows"])
+        sig = tuple(sorted(
+            (k, round(v.used_pct, 3), v.reset) for k, v in
+            (("5h", q.five_h), ("7d", q.one_w), ("7d_fable", q.extra)) if v))
+        if sig == last_written:
+            continue   # 同一批数据的重播不落盘
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = CACHE_DIR / "mirasim_quota.json.tmp"
+            tmp.write_text(json.dumps(_to_json(q)), "utf-8")
+            os.replace(tmp, CACHE_DIR / "mirasim_quota.json")   # 原子替换
+            last_written = sig
+            log.debug("Mirasim 额度推送已落缓存")
+        except OSError:
+            pass
 
 
 _QUERY_FNS = {

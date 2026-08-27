@@ -24,7 +24,7 @@ import time
 
 from PIL import Image, ImageDraw
 
-from . import ble, cli, config
+from . import ble, cli, config, quota
 
 try:
     import pystray
@@ -77,6 +77,8 @@ class InkScryTray:
         self._stopped = False
         self._wake = threading.Event()   # set() 立刻结束本轮等待
         self._interval = cli._env_interval()
+        # Mirasim 额度是推送制（WS 长连）：监听线程实时落缓存
+        quota.start_mirasim_listener()
         data = cli._load_last_sig()
         if isinstance(data, list):   # 兼容旧格式（纯面板列表）
             data = {"panels": data}

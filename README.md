@@ -164,15 +164,19 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
   走 `/v1/usage`（对齐 cc-switch），返回余额 + 每日消耗，备注行显示
   最近一天的花费「MM-DD $x」
 - Mirasim：桌面客户端的**本机接口**（127.0.0.1，无鉴权无 token）。
-  hub 端口随进程启动漂移：查询时自动枚举 Mirasim 进程的回环监听
-  端口逐个探测 `/v1/limits`（web 端口 4970 返回 SPA 页面、shell 口
-  返回无 windows 的 JSON，都会被跳过）；`INKSCRY_MIRASIM_BASE` 可
-  显式固定。`windows[]` 的 used/budget 为积分、reset_at 为 epoch 秒。
-  账号带档位子额度（如 `7d_fable`，预算约为总周窗的一半、全用
-  Fable 时先撞墙）时，面板内以第三档「F周」与 5时/1周 并列显示，
-  且该面板自动在网格中展宽为一整行（同源数据同面板；无此窗口的
-  账号只有两档不展宽）。非官方接口（思路对齐 mirasim-quota-widget），
-  客户端更新可能需适配
+  0.0.227 起旧的 `GET /v1/limits` 已下线，现走渲染层 WebSocket
+  （`ws://{服务端口}/ws`）：服务端主动推 `relay.usage`（5h/7d/7d_fable
+  的 usedPercent/resetAt，≤60s 一跳）。推送制与轮询不合拍，故菜单栏/
+  托盘程序内置**长连监听线程**，把每跳推送实时写进本地额度缓存，
+  同步轮只读缓存；无常驻进程时退回冷连接等一跳（约 10 秒，等不到
+  则用过期缓存）。服务端口随进程启动漂移：自动枚举 Mirasim 进程的
+  回环监听端口，探测 `/api/health` 报 `name=mirasim` 的才是；
+  `INKSCRY_MIRASIM_BASE` 可显式固定。WS 客户端为零依赖 stdlib
+  手写（握手/分帧/ping-pong）。账号带档位子额度（如 `7d_fable`，
+  全用 Fable 时先撞墙）时，面板内以第三档「F周」与 5时/1周 并列
+  显示，且该面板自动在网格中展宽为一整行（同源数据同面板；无此
+  窗口的账号只有两档不展宽）。非官方接口（思路对齐
+  mirasim-quota-widget），客户端更新可能需适配
 - NEWAPI/SUB2API 支持**多实例**（多站点/多账号）：`BASE` 和 `TOKEN` 用
   逗号分隔按位置配对，如 `BASE=a,b` + `TOKEN=t1,t2` → `NEWAPI`/`NEWAPI2`
   两个面板（各自独立域名和缓存；`USER_ID` 没配够时复用最后一个值）。
