@@ -155,7 +155,9 @@ def _select_window(windows: list[dict], target_seconds: float) -> dict | None:
         secs = _window_seconds(w)
         if secs is not None and 0.5 <= secs / target_seconds <= 2.0:
             candidates.append((abs(secs - target_seconds), w))
-    return min(candidates)[1] if candidates else None
+    # key 只比偏差：两个窗口时长相同时（接口会返回主/副同长窗口），
+    # 裸 min 会退化成 dict < dict 直接 TypeError
+    return min(candidates, key=lambda c: c[0])[1] if candidates else None
 
 
 def parse_usage(data: dict) -> CodexQuota:
