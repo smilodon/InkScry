@@ -518,6 +518,11 @@ def main() -> int:
                               f"已用 {w.used_pct:.1f}%  重置 {w.short_reset()}")
                     else:
                         print(f"  {label}: 未找到")
+                if q.extra:   # 第三档（如 Mirasim F周），有才显示
+                    print(f"  {q.extra_label or '3档'}: "
+                          f"剩余 {q.extra.remaining_pct:.1f}%  "
+                          f"已用 {q.extra.used_pct:.1f}%  "
+                          f"重置 {q.extra.short_reset()}")
 
             entries: list[tuple[str, quota.CodexQuota]] = []
             q = quota.get_quota(cache_ttl=0)  # 强制联网刷新
