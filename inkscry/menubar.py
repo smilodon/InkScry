@@ -6,6 +6,7 @@
     立即刷新            跳过防抖与比对，必推
     暂停/恢复自动同步
     同步间隔 ▸          5/15/30/60 分钟（运行期生效；默认值在 .env）
+    展开时刷新 ▸        每次 / 间隔 1~15 分钟（点开菜单补一轮同步的节奏）
     屏幕管理 ▸          查看当前画面 / 清屏（并暂停同步）
     配置 ▸              编辑 .env… / 重载配置（改面板顺序、标签后点它）
 
@@ -58,6 +59,11 @@ TITLE = "墨"
 TITLE_BUSY = "墨…"
 TITLE_ERROR = "墨!"
 
+# 菜单展开补同步的最小间隔选项（秒；0 = 每次展开都补一轮）
+MENU_OPEN_CHOICES = [(0, "每次"), (60, "间隔 1 分钟"), (180, "间隔 3 分钟"),
+                     (300, "间隔 5 分钟"), (600, "间隔 10 分钟"),
+                     (900, "间隔 15 分钟")]
+
 
 class InkScryBar(rumps.App if rumps else object):
     def __init__(self) -> None:
@@ -73,6 +79,13 @@ class InkScryBar(rumps.App if rumps else object):
             for sec, label in cli.INTERVAL_CHOICES}
         self.interval_menu = rumps.MenuItem("同步间隔")
         self.interval_menu.update(list(self.interval_items.values()))
+        self.menu_open_items = {
+            sec: rumps.MenuItem(label,
+                                callback=lambda _i, s=sec: self._set_menu_open_min(s))
+            for sec, label in MENU_OPEN_CHOICES}
+        self.menu_open_items[0].state = 1   # 默认每次展开都补
+        self.menu_open_menu = rumps.MenuItem("展开时刷新")
+        self.menu_open_menu.update(list(self.menu_open_items.values()))
         self.screen_menu = rumps.MenuItem("屏幕管理")
         self.screen_menu.update([
             rumps.MenuItem("查看当前画面", callback=self.on_preview),
@@ -86,6 +99,8 @@ class InkScryBar(rumps.App if rumps else object):
 
         self.paused = False
         self._busy = threading.Lock()
+        self._menu_open_min = 0          # 菜单展开补同步的最小间隔（0 = 每次）
+        self._last_menu_open = 0.0       # 上次展开触发同步的时刻（monotonic）
         # (消息, 签名|None, 出错?, 附加动作|None)，工作线程写、主线程消费
         self._pending: tuple[str, dict | None, bool, str | None] | None = None
         # 启动即从「屏上内容镜像」恢复面板行，不必等第一轮同步
@@ -121,9 +136,14 @@ class InkScryBar(rumps.App if rumps else object):
         self._spawn(self._sync_work, force=True)
 
     def on_menu_open(self) -> None:
-        """菜单展开：即时补一轮同步（暂停时不动；_busy 撞车自动跳过）。"""
-        if not self.paused:
-            self._spawn(self._sync_work, force=False)
+        """菜单展开：按设定的最小间隔补一轮同步（暂停时不动；_busy 撞车自动跳过）。"""
+        if self.paused:
+            return
+        now = time.monotonic()
+        if now - self._last_menu_open < self._menu_open_min:
+            return
+        self._last_menu_open = now
+        self._spawn(self._sync_work, force=False)
 
     def on_pause(self, item) -> None:
         self.paused = not self.paused
@@ -141,6 +161,11 @@ class InkScryBar(rumps.App if rumps else object):
             self._sync_timer.stop()
         self._sync_timer = rumps.Timer(self.on_tick, seconds)
         self._sync_timer.start()   # 启动即触发一轮，再按新间隔重复
+
+    def _set_menu_open_min(self, seconds: int) -> None:
+        self._menu_open_min = seconds
+        for sec, item in self.menu_open_items.items():
+            item.state = 1 if sec == seconds else 0
 
     def on_preview(self, _item) -> None:
         if cli.PREVIEW_PNG.exists():
@@ -228,7 +253,8 @@ class InkScryBar(rumps.App if rumps else object):
             for p in panels:
                 items.append(rumps.MenuItem(cli._panel_line(p)))
         items += [None, self.refresh_item, self.pause_item,
-                  None, self.interval_menu, self.screen_menu, self.config_menu,
+                  None, self.interval_menu, self.menu_open_menu,
+                  self.screen_menu, self.config_menu,
                   None, rumps.MenuItem("退出", callback=rumps.quit_application)]
         self.menu.clear()
         self.menu.update(items)
