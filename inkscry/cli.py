@@ -178,6 +178,8 @@ def _state_signature(state: renderer.DashboardState) -> dict:
 
     return {
         "banner": state.status if state.status in ("waiting", "error") else "",
+        # 进度条方向开关：数据没变但条画反了也得重推一次
+        "bar_fill": "used" if renderer.bar_fill_used() else "remaining",
         # 与渲染同用 visible_panels 截断（宽面板计 2 槽位）：签名只收
         # 真正画上屏的面板，否则被裁掉的面板一变就触发无意义全刷
         "panels": [panel_sig(p)
@@ -226,7 +228,9 @@ def _sig_changed(new: dict, old) -> bool:
     band = _hysteresis_band()
     if band <= 0:
         return new != old
-    if new.get("banner") != old.get("banner"):
+    # 顶层标量（banner、bar_fill 等）逐字比，只有面板百分比走滞回带
+    if any(new.get(k) != old.get(k)
+           for k in set(new) | set(old) if k != "panels"):
         return True
     new_panels, old_panels = new.get("panels", []), old.get("panels", [])
     if not isinstance(old_panels, list) or len(new_panels) != len(old_panels):

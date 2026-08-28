@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +21,15 @@ WIDTH, HEIGHT = 400, 300
 BYTES_PER_ROW = WIDTH // 8
 TITLE_FONT_SIZE = 16        # 面板标题字号
 CENTER_CONTENT = False      # 面板内容水平居中（试过不如左对齐，保留开关）
+
+
+def bar_fill_used() -> bool:
+    """进度条方向：INKSCRY_BAR_FILL=used 时条长表示「已用」（满 = 用光，
+    额度充足时条是空的），缺省 remaining 表示「剩余」（满 = 额度满格）。
+    大数字始终是剩余量，只有条的方向随此开关。运行时读取，配合
+    菜单栏「重载配置」即时生效。"""
+    return (os.environ.get("INKSCRY_BAR_FILL", "").strip().lower()
+            in ("used", "usage", "已用"))
 
 STATUS_LABELS = {
     "running": "运行中",
@@ -239,7 +249,9 @@ def _draw_quota_block(d: ImageDraw.ImageDraw, x0: int, w: int, by: int,
            font=f_pct, fill=0)
     pbar_y = by + (24 if wide else (16 if mini else 20))
     d.rectangle([x0, pbar_y, x0 + w - 6, pbar_y + 8], outline=0)
-    fill_w = int((w - 8) * max(0.0, min(100.0, pct)) / 100)
+    # 条长按开关取「剩余」或「已用」（大数字恒为剩余量，见 bar_fill_used）
+    bar_pct = 100.0 - pct if bar_fill_used() else pct
+    fill_w = int((w - 8) * max(0.0, min(100.0, bar_pct)) / 100)
     if fill_w > 0:
         d.rectangle([x0 + 1, pbar_y + 1, x0 + 1 + fill_w, pbar_y + 7], fill=0)
     if reset:

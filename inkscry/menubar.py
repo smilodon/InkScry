@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 
-from . import ble, cli, config, quota
+from . import ble, cli, config, quota, renderer
 
 try:
     import rumps
@@ -89,6 +89,14 @@ class InkScryBar(rumps.App if rumps else object):
         self.menu_open_items[0].state = 1   # 默认每次展开都补
         self.menu_open_menu = rumps.MenuItem("展开时刷新")
         self.menu_open_menu.update(list(self.menu_open_items.values()))
+        self.bar_items = {
+            mode: rumps.MenuItem(
+                label, callback=lambda _i, m=mode: self._set_bar_fill(m))
+            for mode, label in (("remaining", "满格 = 额度充足"),
+                                ("used", "满格 = 已用光"))}
+        self.bar_menu = rumps.MenuItem("进度条方向")
+        self.bar_menu.update(list(self.bar_items.values()))
+        self._sync_bar_state()
         self.screen_menu = rumps.MenuItem("屏幕管理")
         self.screen_menu.update([
             rumps.MenuItem("查看当前画面", callback=self.on_preview),
@@ -173,6 +181,18 @@ class InkScryBar(rumps.App if rumps else object):
         for sec, item in self.menu_open_items.items():
             item.state = 1 if sec == seconds else 0
 
+    def _sync_bar_state(self) -> None:
+        cur = "used" if renderer.bar_fill_used() else "remaining"
+        for mode, item in self.bar_items.items():
+            item.state = 1 if mode == cur else 0
+
+    def _set_bar_fill(self, mode: str) -> None:
+        """切进度条方向：写进程内环境变量即刻生效，并立即重推一屏
+        （屏显签名含此开关，数据没变也会判定有变化）。"""
+        os.environ["INKSCRY_BAR_FILL"] = mode
+        self._sync_bar_state()
+        self._spawn(self._sync_work, force=False)
+
     def on_preview(self, _item) -> None:
         if cli.PREVIEW_PNG.exists():
             subprocess.Popen(["open", str(cli.PREVIEW_PNG)])
@@ -197,6 +217,7 @@ class InkScryBar(rumps.App if rumps else object):
         for k in [k for k in os.environ if k.startswith("INKSCRY_")]:
             del os.environ[k]
         config.load_dotenv()
+        self._sync_bar_state()   # .env 里改过 BAR_FILL 的话勾选态跟上
         self._rebuild(f"{time.strftime('%H:%M')} 配置已重载")
         self._set_interval(cli._env_interval())   # 顺带按新配置重建定时器并同步一轮
 
@@ -272,7 +293,7 @@ class InkScryBar(rumps.App if rumps else object):
                 items.append(rumps.MenuItem(cli._panel_line(p)))
         items += [None, self.refresh_item, self.pause_item,
                   None, self.interval_menu, self.menu_open_menu,
-                  self.screen_menu, self.config_menu,
+                  self.bar_menu, self.screen_menu, self.config_menu,
                   None, rumps.MenuItem("退出", callback=rumps.quit_application)]
         self.menu.clear()
         self.menu.update(items)
