@@ -121,6 +121,8 @@ class InkScryTray:
 
     def _interval_setter(self, sec: int):
         def do(_icon, _item):
+            if self._interval == sec:
+                return   # 选中的还是当前档，不必重跑一轮
             self._interval = sec
             self._wake.set()   # 立刻按新间隔同步一轮
         return do
@@ -128,14 +130,22 @@ class InkScryTray:
     def _interval_checked(self, sec: int):
         return lambda _item: self._interval == sec
 
+    @staticmethod
+    def _view_state() -> tuple[bool, bool]:
+        """当前生效的画法（数字口径, 条方向）——点菜单前后比这个，
+        选中的还是原来那项就不必白跑一轮。"""
+        return renderer.pct_show_used(), renderer.bar_fill_used()
+
     def _view_setter(self, mode: str):
-        """切显示口径：写进程内环境变量即刻生效，并立刻重推一屏
+        """切显示口径：写进程内环境变量即刻生效，画法真变了才重推一屏
         （屏显签名含此开关，数据没变也判定有变化）。顺带清掉条方向
         覆盖项，保证点完菜单数字与条一定同向。"""
         def do(_icon, _item):
+            before = self._view_state()
             os.environ["INKSCRY_QUOTA_VIEW"] = mode
             os.environ.pop("INKSCRY_BAR_FILL", None)
-            self._wake.set()
+            if self._view_state() != before:
+                self._wake.set()
         return do
 
     @staticmethod

@@ -122,6 +122,7 @@ class InkScryBar(rumps.App if rumps else object):
         self._rebuild("启动中…")
 
         self._sync_timer: rumps.Timer | None = None
+        self._interval = 0
         self._set_interval(cli._env_interval())   # 建定时器；NSTimer 启动即触发首轮
         rumps.Timer(self._apply_pending, 1).start()
         # 菜单展开即补一轮同步（正常路径：缓存/比对/防抖俱在，
@@ -169,6 +170,10 @@ class InkScryBar(rumps.App if rumps else object):
             self.on_tick(None)
 
     def _set_interval(self, seconds: int) -> None:
+        # 选中的还是当前档：定时器照旧跑着，不重建（重建会立即触发一轮）
+        if self._sync_timer is not None and self._interval == seconds:
+            return
+        self._interval = seconds
         for sec, item in self.interval_items.items():
             item.state = 1 if sec == seconds else 0
         if self._sync_timer is not None:
@@ -186,14 +191,22 @@ class InkScryBar(rumps.App if rumps else object):
         for mode, item in self.view_items.items():
             item.state = 1 if mode == cur else 0
 
+    @staticmethod
+    def _view_state() -> tuple[bool, bool]:
+        """当前生效的画法（数字口径, 条方向）——点菜单前后比这个，
+        选中的还是原来那项就不必白跑一轮。"""
+        return renderer.pct_show_used(), renderer.bar_fill_used()
+
     def _set_view(self, mode: str) -> None:
-        """切显示口径：写进程内环境变量即刻生效，并立即重推一屏
+        """切显示口径：写进程内环境变量即刻生效，画法真变了才重推一屏
         （屏显签名含此开关，数据没变也判定有变化）。顺带清掉条方向
         覆盖项，保证点完菜单数字与条一定同向。"""
+        before = self._view_state()
         os.environ["INKSCRY_QUOTA_VIEW"] = mode
         os.environ.pop("INKSCRY_BAR_FILL", None)
         self._sync_view_state()
-        self._spawn(self._sync_work, force=False)
+        if self._view_state() != before:
+            self._spawn(self._sync_work, force=False)
 
     def on_preview(self, _item) -> None:
         if cli.PREVIEW_PNG.exists():
@@ -221,7 +234,10 @@ class InkScryBar(rumps.App if rumps else object):
         config.load_dotenv()
         self._sync_view_state()   # .env 里改过口径的话勾选态跟上
         self._rebuild(f"{time.strftime('%H:%M')} 配置已重载")
-        self._set_interval(cli._env_interval())   # 顺带按新配置重建定时器并同步一轮
+        self._set_interval(cli._env_interval())   # 间隔变了才重建定时器
+        # 重载必同步一轮（面板顺序/token 等改动要立刻体现）；若上面
+        # 重建了定时器，其首轮会撞上 _busy 自行跳过，不会同步两次
+        self._spawn(self._sync_work, force=False)
 
     def _spawn(self, work, busy_msg: str = "刷新中…", **kwargs) -> None:
         if not self._busy.acquire(blocking=False):
