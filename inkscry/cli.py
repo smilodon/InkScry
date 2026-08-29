@@ -152,8 +152,10 @@ def _state_signature(state: renderer.DashboardState) -> dict:
     状态字的更新搭数据变化的便车。
     """
     def pct(v: float | None) -> str | None:
-        # 与 renderer._fmt_pct 同口径：小数位非零才带小数（带第三档的
-        # 宽面板独占整行、narrow 档，同样一位小数）
+        # 存屏上真正显示的数字（剩余或已用口径由 display_pct 决定），
+        # 精度与 renderer._fmt_pct 同口径：小数位非零才带小数（带第三
+        # 档的宽面板独占整行、narrow 档，同样一位小数）
+        v = renderer.display_pct(v)
         if v is None:
             return None
         txt = f"{v:.1f}"
@@ -178,8 +180,10 @@ def _state_signature(state: renderer.DashboardState) -> dict:
 
     return {
         "banner": state.status if state.status in ("waiting", "error") else "",
-        # 进度条方向开关：数据没变但条画反了也得重推一次
+        # 显示口径开关：数据没变但画法变了也得重推一次（数字口径已体现
+        # 在 panels 的数值里，仍单列一份免得对称值撞签名）
         "bar_fill": "used" if renderer.bar_fill_used() else "remaining",
+        "pct_mode": "used" if renderer.pct_show_used() else "remaining",
         # 与渲染同用 visible_panels 截断（宽面板计 2 槽位）：签名只收
         # 真正画上屏的面板，否则被裁掉的面板一变就触发无意义全刷
         "panels": [panel_sig(p)
@@ -283,19 +287,26 @@ def _env_interval() -> int:
 
 
 def _panel_line(p: dict) -> str:
-    """把一条屏显签名面板（_state_signature 的 panels 元素）排成菜单行。"""
+    """把一条屏显签名面板（_state_signature 的 panels 元素）排成菜单行。
+
+    签名里存的就是屏上显示的数字；已用口径下加「已用」前缀，
+    菜单里不至于把 4.5% 误读成快没额度了。
+    """
     parts = []
     if p.get("balance"):
         parts.append(p["balance"])
         if p.get("detail"):
             parts.append(p["detail"])
     else:
+        used = renderer.pct_show_used()
+        def seg(label: str, value) -> str:
+            return f"{label} {'已用 ' if used else ''}{value}%"
         if p.get("five") is not None:
-            parts.append(f"5时 {p['five']}%")
+            parts.append(seg("5时", p["five"]))
         if p.get("week") is not None:
-            parts.append(f"1周 {p['week']}%")
+            parts.append(seg("1周", p["week"]))
         if p.get("extra") is not None:
-            parts.append(f"{p.get('extra_label') or '?'} {p['extra']}%")
+            parts.append(seg(p.get("extra_label") or "?", p["extra"]))
     body = " · ".join(parts) or "--"
     warn = "⚠ " if p.get("stale") or p.get("alert") else ""
     return f"{warn}{p['label']}  {body}"

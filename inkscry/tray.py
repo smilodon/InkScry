@@ -106,10 +106,17 @@ class InkScryTray:
                    checked=self._interval_checked(sec))
               for sec, label in cli.INTERVAL_CHOICES]))
         yield item("进度条方向", pystray.Menu(
-            *[item(label, self._bar_setter(mode), radio=True,
-                   checked=self._bar_checked(mode))
+            *[item(label, self._mode_setter("INKSCRY_BAR_FILL", mode),
+                   radio=True,
+                   checked=self._mode_checked(renderer.bar_fill_used, mode))
               for mode, label in (("remaining", "满格 = 额度充足"),
                                   ("used", "满格 = 已用光"))]))
+        yield item("数字口径", pystray.Menu(
+            *[item(label, self._mode_setter("INKSCRY_PCT_MODE", mode),
+                   radio=True,
+                   checked=self._mode_checked(renderer.pct_show_used, mode))
+              for mode, label in (("remaining", "剩余百分比"),
+                                  ("used", "已用百分比"))]))
         yield item("屏幕管理", pystray.Menu(
             item("查看当前画面", self.on_preview),
             item("清屏（并暂停同步）", self.on_clear)))
@@ -128,17 +135,17 @@ class InkScryTray:
     def _interval_checked(self, sec: int):
         return lambda _item: self._interval == sec
 
-    def _bar_setter(self, mode: str):
-        """切进度条方向：写进程内环境变量即刻生效，并立刻重推一屏
-        （屏显签名含此开关，数据没变也会判定有变化）。"""
+    def _mode_setter(self, env_key: str, mode: str):
+        """切显示口径（条方向 / 数字）：写进程内环境变量即刻生效，
+        并立刻重推一屏（屏显签名含这些开关，数据没变也判定有变化）。"""
         def do(_icon, _item):
-            os.environ["INKSCRY_BAR_FILL"] = mode
+            os.environ[env_key] = mode
             self._wake.set()
         return do
 
-    def _bar_checked(self, mode: str):
-        return lambda _item: (
-            mode == ("used" if renderer.bar_fill_used() else "remaining"))
+    @staticmethod
+    def _mode_checked(is_used, mode: str):
+        return lambda _item: mode == ("used" if is_used() else "remaining")
 
     # ── 菜单动作 ────────────────────────────────────────────
     def on_refresh(self, _icon, _item) -> None:

@@ -91,11 +91,20 @@ class InkScryBar(rumps.App if rumps else object):
         self.menu_open_menu.update(list(self.menu_open_items.values()))
         self.bar_items = {
             mode: rumps.MenuItem(
-                label, callback=lambda _i, m=mode: self._set_bar_fill(m))
+                label, callback=lambda _i, m=mode: self._set_mode(
+                    "INKSCRY_BAR_FILL", m))
             for mode, label in (("remaining", "满格 = 额度充足"),
                                 ("used", "满格 = 已用光"))}
         self.bar_menu = rumps.MenuItem("进度条方向")
         self.bar_menu.update(list(self.bar_items.values()))
+        self.pct_items = {
+            mode: rumps.MenuItem(
+                label, callback=lambda _i, m=mode: self._set_mode(
+                    "INKSCRY_PCT_MODE", m))
+            for mode, label in (("remaining", "剩余百分比"),
+                                ("used", "已用百分比"))}
+        self.pct_menu = rumps.MenuItem("数字口径")
+        self.pct_menu.update(list(self.pct_items.values()))
         self._sync_bar_state()
         self.screen_menu = rumps.MenuItem("屏幕管理")
         self.screen_menu.update([
@@ -182,14 +191,16 @@ class InkScryBar(rumps.App if rumps else object):
             item.state = 1 if sec == seconds else 0
 
     def _sync_bar_state(self) -> None:
-        cur = "used" if renderer.bar_fill_used() else "remaining"
-        for mode, item in self.bar_items.items():
-            item.state = 1 if mode == cur else 0
+        for items, used in ((self.bar_items, renderer.bar_fill_used()),
+                            (self.pct_items, renderer.pct_show_used())):
+            cur = "used" if used else "remaining"
+            for mode, item in items.items():
+                item.state = 1 if mode == cur else 0
 
-    def _set_bar_fill(self, mode: str) -> None:
-        """切进度条方向：写进程内环境变量即刻生效，并立即重推一屏
-        （屏显签名含此开关，数据没变也会判定有变化）。"""
-        os.environ["INKSCRY_BAR_FILL"] = mode
+    def _set_mode(self, env_key: str, mode: str) -> None:
+        """切显示口径（条方向 / 数字）：写进程内环境变量即刻生效，
+        并立即重推一屏（屏显签名含这些开关，数据没变也判定有变化）。"""
+        os.environ[env_key] = mode
         self._sync_bar_state()
         self._spawn(self._sync_work, force=False)
 
@@ -293,7 +304,8 @@ class InkScryBar(rumps.App if rumps else object):
                 items.append(rumps.MenuItem(cli._panel_line(p)))
         items += [None, self.refresh_item, self.pause_item,
                   None, self.interval_menu, self.menu_open_menu,
-                  self.bar_menu, self.screen_menu, self.config_menu,
+                  self.bar_menu, self.pct_menu,
+                  self.screen_menu, self.config_menu,
                   None, rumps.MenuItem("退出", callback=rumps.quit_application)]
         self.menu.clear()
         self.menu.update(items)

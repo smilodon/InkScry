@@ -23,13 +23,30 @@ TITLE_FONT_SIZE = 16        # 面板标题字号
 CENTER_CONTENT = False      # 面板内容水平居中（试过不如左对齐，保留开关）
 
 
+_USED_WORDS = ("used", "usage", "已用")
+
+
 def bar_fill_used() -> bool:
     """进度条方向：INKSCRY_BAR_FILL=used 时条长表示「已用」（满 = 用光，
     额度充足时条是空的），缺省 remaining 表示「剩余」（满 = 额度满格）。
-    大数字始终是剩余量，只有条的方向随此开关。运行时读取，配合
-    菜单栏「重载配置」即时生效。"""
+    运行时读取，配合菜单栏「重载配置」即时生效。"""
     return (os.environ.get("INKSCRY_BAR_FILL", "").strip().lower()
-            in ("used", "usage", "已用"))
+            in _USED_WORDS)
+
+
+def pct_show_used() -> bool:
+    """大数字口径：INKSCRY_PCT_MODE=used 显示已用百分比，缺省显示剩余。
+    与进度条方向彼此独立（四种组合都成立，如数字看剩余、条看消耗）。"""
+    return (os.environ.get("INKSCRY_PCT_MODE", "").strip().lower()
+            in _USED_WORDS)
+
+
+def display_pct(remaining: float | None) -> float | None:
+    """剩余百分比 → 当前口径下要显示的数字。取补不改变小数位有无
+    （x.5 ↔ y.5），故 _fmt_pct 的精度收敛规则两种口径一致。"""
+    if remaining is None or not pct_show_used():
+        return remaining
+    return 100.0 - remaining
 
 STATUS_LABELS = {
     "running": "运行中",
@@ -208,7 +225,8 @@ def _panel_content_h(p: QuotaPanel) -> int:
 
 
 def _fmt_pct(pct: float, mini: bool = False) -> str:
-    """剩余百分比文本：按数据源真实精度显示——小数位非零才带一位小数
+    """百分比文本（口径由 display_pct 定，剩余或已用）：按数据源真实
+    精度显示——小数位非零才带一位小数
     （Codex/Kimi 等上游是整数百分点粒度，挂「.0」是假精度；100 同理
     收敛整数）；mini 档宽度装不下小数，一律整数。"""
     txt = f"{pct:.1f}"
@@ -236,16 +254,18 @@ def _draw_quota_block(d: ImageDraw.ImageDraw, x0: int, w: int, by: int,
     # pct_dx 需容纳标签（CJK16=27px / CJK10=17px）并留间隙
     pct_dx, pct_dy = (30, -7) if wide else ((20, -2) if mini else (30, -4))
     # 「标签 + 百分比」作为组合整体居中；进度条保持通栏作视觉锚点
+    # 数字口径（剩余/已用）与条方向各自独立取值；pct 参数恒为剩余量
+    shown = display_pct(pct)
     shift = 0
     if CENTER_CONTENT:
-        pct_txt = "--" if pct is None else _fmt_pct(pct, mini)
+        pct_txt = "--" if shown is None else _fmt_pct(shown, mini)
         group_w = pct_dx + d.textlength(pct_txt, font=f_pct)
         shift = max(0, int((w - group_w) / 2))
     d.text((x0 + shift, by + (2 if mini else 0)), label, font=f_lbl, fill=0)
     if pct is None:
         d.text((x0 + shift + pct_dx, by + pct_dy), "--", font=f_pct, fill=0)
         return by + 44
-    d.text((x0 + shift + pct_dx, by + pct_dy), _fmt_pct(pct, mini),
+    d.text((x0 + shift + pct_dx, by + pct_dy), _fmt_pct(shown, mini),
            font=f_pct, fill=0)
     pbar_y = by + (24 if wide else (16 if mini else 20))
     d.rectangle([x0, pbar_y, x0 + w - 6, pbar_y + 8], outline=0)
