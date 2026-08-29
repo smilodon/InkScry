@@ -89,23 +89,14 @@ class InkScryBar(rumps.App if rumps else object):
         self.menu_open_items[0].state = 1   # 默认每次展开都补
         self.menu_open_menu = rumps.MenuItem("展开时刷新")
         self.menu_open_menu.update(list(self.menu_open_items.values()))
-        self.bar_items = {
+        self.view_items = {
             mode: rumps.MenuItem(
-                label, callback=lambda _i, m=mode: self._set_mode(
-                    "INKSCRY_BAR_FILL", m))
-            for mode, label in (("remaining", "满格 = 额度充足"),
-                                ("used", "满格 = 已用光"))}
-        self.bar_menu = rumps.MenuItem("进度条方向")
-        self.bar_menu.update(list(self.bar_items.values()))
-        self.pct_items = {
-            mode: rumps.MenuItem(
-                label, callback=lambda _i, m=mode: self._set_mode(
-                    "INKSCRY_PCT_MODE", m))
-            for mode, label in (("remaining", "剩余百分比"),
-                                ("used", "已用百分比"))}
-        self.pct_menu = rumps.MenuItem("数字口径")
-        self.pct_menu.update(list(self.pct_items.values()))
-        self._sync_bar_state()
+                label, callback=lambda _i, m=mode: self._set_view(m))
+            for mode, label in (("remaining", "剩余量（满格 = 额度充足）"),
+                                ("used", "已用量（满格 = 已用光）"))}
+        self.view_menu = rumps.MenuItem("显示口径")
+        self.view_menu.update(list(self.view_items.values()))
+        self._sync_view_state()
         self.screen_menu = rumps.MenuItem("屏幕管理")
         self.screen_menu.update([
             rumps.MenuItem("查看当前画面", callback=self.on_preview),
@@ -190,18 +181,18 @@ class InkScryBar(rumps.App if rumps else object):
         for sec, item in self.menu_open_items.items():
             item.state = 1 if sec == seconds else 0
 
-    def _sync_bar_state(self) -> None:
-        for items, used in ((self.bar_items, renderer.bar_fill_used()),
-                            (self.pct_items, renderer.pct_show_used())):
-            cur = "used" if used else "remaining"
-            for mode, item in items.items():
-                item.state = 1 if mode == cur else 0
+    def _sync_view_state(self) -> None:
+        cur = "used" if renderer.quota_view_used() else "remaining"
+        for mode, item in self.view_items.items():
+            item.state = 1 if mode == cur else 0
 
-    def _set_mode(self, env_key: str, mode: str) -> None:
-        """切显示口径（条方向 / 数字）：写进程内环境变量即刻生效，
-        并立即重推一屏（屏显签名含这些开关，数据没变也判定有变化）。"""
-        os.environ[env_key] = mode
-        self._sync_bar_state()
+    def _set_view(self, mode: str) -> None:
+        """切显示口径：写进程内环境变量即刻生效，并立即重推一屏
+        （屏显签名含此开关，数据没变也判定有变化）。顺带清掉条方向
+        覆盖项，保证点完菜单数字与条一定同向。"""
+        os.environ["INKSCRY_QUOTA_VIEW"] = mode
+        os.environ.pop("INKSCRY_BAR_FILL", None)
+        self._sync_view_state()
         self._spawn(self._sync_work, force=False)
 
     def on_preview(self, _item) -> None:
@@ -228,7 +219,7 @@ class InkScryBar(rumps.App if rumps else object):
         for k in [k for k in os.environ if k.startswith("INKSCRY_")]:
             del os.environ[k]
         config.load_dotenv()
-        self._sync_bar_state()   # .env 里改过 BAR_FILL 的话勾选态跟上
+        self._sync_view_state()   # .env 里改过口径的话勾选态跟上
         self._rebuild(f"{time.strftime('%H:%M')} 配置已重载")
         self._set_interval(cli._env_interval())   # 顺带按新配置重建定时器并同步一轮
 
@@ -304,8 +295,7 @@ class InkScryBar(rumps.App if rumps else object):
                 items.append(rumps.MenuItem(cli._panel_line(p)))
         items += [None, self.refresh_item, self.pause_item,
                   None, self.interval_menu, self.menu_open_menu,
-                  self.bar_menu, self.pct_menu,
-                  self.screen_menu, self.config_menu,
+                  self.view_menu, self.screen_menu, self.config_menu,
                   None, rumps.MenuItem("退出", callback=rumps.quit_application)]
         self.menu.clear()
         self.menu.update(items)

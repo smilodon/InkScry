@@ -26,19 +26,31 @@ CENTER_CONTENT = False      # 面板内容水平居中（试过不如左对齐�
 _USED_WORDS = ("used", "usage", "已用")
 
 
-def bar_fill_used() -> bool:
-    """进度条方向：INKSCRY_BAR_FILL=used 时条长表示「已用」（满 = 用光，
-    额度充足时条是空的），缺省 remaining 表示「剩余」（满 = 额度满格）。
-    运行时读取，配合菜单栏「重载配置」即时生效。"""
-    return (os.environ.get("INKSCRY_BAR_FILL", "").strip().lower()
+def quota_view_used() -> bool:
+    """额度显示口径：INKSCRY_QUOTA_VIEW=used 时大数字与进度条都表示
+    「已用」（数字是消耗量、条随消耗变长），缺省 remaining 都表示
+    「剩余」（满格 = 额度满格）。运行时读取，配合菜单栏「重载配置」
+    即时生效。
+
+    数字与条必须同向：条紧贴数字、同宽、无图例，其含义完全靠数字
+    锚定，两者相反会被读成渲染出错。
+    """
+    return (os.environ.get("INKSCRY_QUOTA_VIEW", "").strip().lower()
             in _USED_WORDS)
+
+
+def bar_fill_used() -> bool:
+    """进度条方向。INKSCRY_BAR_FILL 是高级覆盖项（想要「数字看剩余、
+    条看消耗」的油表式读法时才配），缺省跟随 quota_view_used()。"""
+    override = os.environ.get("INKSCRY_BAR_FILL", "").strip().lower()
+    if override:
+        return override in _USED_WORDS
+    return quota_view_used()
 
 
 def pct_show_used() -> bool:
-    """大数字口径：INKSCRY_PCT_MODE=used 显示已用百分比，缺省显示剩余。
-    与进度条方向彼此独立（四种组合都成立，如数字看剩余、条看消耗）。"""
-    return (os.environ.get("INKSCRY_PCT_MODE", "").strip().lower()
-            in _USED_WORDS)
+    """大数字口径：跟随统一开关。"""
+    return quota_view_used()
 
 
 def display_pct(remaining: float | None) -> float | None:

@@ -105,18 +105,11 @@ class InkScryTray:
             *[item(label, self._interval_setter(sec), radio=True,
                    checked=self._interval_checked(sec))
               for sec, label in cli.INTERVAL_CHOICES]))
-        yield item("进度条方向", pystray.Menu(
-            *[item(label, self._mode_setter("INKSCRY_BAR_FILL", mode),
-                   radio=True,
-                   checked=self._mode_checked(renderer.bar_fill_used, mode))
-              for mode, label in (("remaining", "满格 = 额度充足"),
-                                  ("used", "满格 = 已用光"))]))
-        yield item("数字口径", pystray.Menu(
-            *[item(label, self._mode_setter("INKSCRY_PCT_MODE", mode),
-                   radio=True,
-                   checked=self._mode_checked(renderer.pct_show_used, mode))
-              for mode, label in (("remaining", "剩余百分比"),
-                                  ("used", "已用百分比"))]))
+        yield item("显示口径", pystray.Menu(
+            *[item(label, self._view_setter(mode), radio=True,
+                   checked=self._view_checked(mode))
+              for mode, label in (("remaining", "剩余量（满格 = 额度充足）"),
+                                  ("used", "已用量（满格 = 已用光）"))]))
         yield item("屏幕管理", pystray.Menu(
             item("查看当前画面", self.on_preview),
             item("清屏（并暂停同步）", self.on_clear)))
@@ -135,17 +128,20 @@ class InkScryTray:
     def _interval_checked(self, sec: int):
         return lambda _item: self._interval == sec
 
-    def _mode_setter(self, env_key: str, mode: str):
-        """切显示口径（条方向 / 数字）：写进程内环境变量即刻生效，
-        并立刻重推一屏（屏显签名含这些开关，数据没变也判定有变化）。"""
+    def _view_setter(self, mode: str):
+        """切显示口径：写进程内环境变量即刻生效，并立刻重推一屏
+        （屏显签名含此开关，数据没变也判定有变化）。顺带清掉条方向
+        覆盖项，保证点完菜单数字与条一定同向。"""
         def do(_icon, _item):
-            os.environ[env_key] = mode
+            os.environ["INKSCRY_QUOTA_VIEW"] = mode
+            os.environ.pop("INKSCRY_BAR_FILL", None)
             self._wake.set()
         return do
 
     @staticmethod
-    def _mode_checked(is_used, mode: str):
-        return lambda _item: mode == ("used" if is_used() else "remaining")
+    def _view_checked(mode: str):
+        return lambda _item: mode == ("used" if renderer.quota_view_used()
+                                      else "remaining")
 
     # ── 菜单动作 ────────────────────────────────────────────
     def on_refresh(self, _icon, _item) -> None:
