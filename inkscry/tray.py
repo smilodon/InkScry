@@ -76,6 +76,7 @@ class InkScryTray:
         self._busy = threading.Lock()
         self._stopped = False
         self._wake = threading.Event()   # set() 立刻结束本轮等待
+        self._force_next = False         # 下一轮强制推送（手动切口径等）
         self._interval = cli._env_interval()
         # Mirasim 额度是推送制（WS 长连）：监听线程实时落缓存
         quota.start_mirasim_listener()
@@ -145,6 +146,7 @@ class InkScryTray:
             os.environ["INKSCRY_QUOTA_VIEW"] = mode
             os.environ.pop("INKSCRY_BAR_FILL", None)
             if self._view_state() != before:
+                self._force_next = True   # 绕过防抖，立刻见效
                 self._wake.set()
         return do
 
@@ -204,7 +206,11 @@ class InkScryTray:
     # ── 同步调度（后台线程；_wake 可提前打断等待）───────────
     def _scheduler(self) -> None:
         while not self._stopped:
-            if not self.paused:
+            # 手动切口径等操作要立刻见效：绕过防抖，也不受静默时段限制
+            forced, self._force_next = self._force_next, False
+            if forced:
+                self._spawn(self._sync_work, force=True)
+            elif not self.paused:
                 if cli._in_quiet(time.localtime().tm_hour):
                     self._set_status(f"{time.strftime('%H:%M')} "
                                      "静默时段，暂不同步")

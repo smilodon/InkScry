@@ -206,7 +206,8 @@ class InkScryBar(rumps.App if rumps else object):
         os.environ.pop("INKSCRY_BAR_FILL", None)
         self._sync_view_state()
         if self._view_state() != before:
-            self._spawn(self._sync_work, force=False)
+            # force=True：手动切口径要立刻见效，不能被 60s 推送防抖吃掉
+            self._spawn(self._sync_work, force=True)
 
     def on_preview(self, _item) -> None:
         if cli.PREVIEW_PNG.exists():
