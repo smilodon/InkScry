@@ -93,7 +93,8 @@ class InkScryBar(rumps.App if rumps else object):
             mode: rumps.MenuItem(
                 label, callback=lambda _i, m=mode: self._set_view(m))
             for mode, label in (("remaining", "剩余量（满格 = 额度充足）"),
-                                ("used", "已用量（满格 = 已用光）"))}
+                                ("used", "已用量（满格 = 已用光）"),
+                                ("gauge", "油表（数字看剩余，条看消耗）"))}
         self.view_menu = rumps.MenuItem("显示口径")
         self.view_menu.update(list(self.view_items.values()))
         self._sync_view_state()
@@ -187,7 +188,12 @@ class InkScryBar(rumps.App if rumps else object):
             item.state = 1 if sec == seconds else 0
 
     def _sync_view_state(self) -> None:
-        cur = "used" if renderer.quota_view_used() else "remaining"
+        if renderer.quota_view_used():
+            cur = "used"
+        elif renderer.bar_fill_used():   # 条方向被覆盖成「已用」= 油表
+            cur = "gauge"
+        else:
+            cur = "remaining"
         for mode, item in self.view_items.items():
             item.state = 1 if mode == cur else 0
 
@@ -199,11 +205,15 @@ class InkScryBar(rumps.App if rumps else object):
 
     def _set_view(self, mode: str) -> None:
         """切显示口径：写进程内环境变量即刻生效，画法真变了才重推一屏
-        （屏显签名含此开关，数据没变也判定有变化）。顺带清掉条方向
-        覆盖项，保证点完菜单数字与条一定同向。"""
+        （屏显签名含此开关，数据没变也判定有变化）。油表档借条方向
+        覆盖项实现；其余两档清掉覆盖项，保证数字与条一定同向。"""
         before = self._view_state()
-        os.environ["INKSCRY_QUOTA_VIEW"] = mode
-        os.environ.pop("INKSCRY_BAR_FILL", None)
+        if mode == "gauge":
+            os.environ["INKSCRY_QUOTA_VIEW"] = "remaining"
+            os.environ["INKSCRY_BAR_FILL"] = "used"
+        else:
+            os.environ["INKSCRY_QUOTA_VIEW"] = mode
+            os.environ.pop("INKSCRY_BAR_FILL", None)
         self._sync_view_state()
         if self._view_state() != before:
             # force=True：手动切口径要立刻见效，不能被 60s 推送防抖吃掉

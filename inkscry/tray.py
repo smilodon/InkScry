@@ -110,7 +110,8 @@ class InkScryTray:
             *[item(label, self._view_setter(mode), radio=True,
                    checked=self._view_checked(mode))
               for mode, label in (("remaining", "剩余量（满格 = 额度充足）"),
-                                  ("used", "已用量（满格 = 已用光）"))]))
+                                  ("used", "已用量（满格 = 已用光）"),
+                                  ("gauge", "油表（数字看剩余，条看消耗）"))]))
         yield item("屏幕管理", pystray.Menu(
             item("查看当前画面", self.on_preview),
             item("清屏（并暂停同步）", self.on_clear)))
@@ -139,21 +140,32 @@ class InkScryTray:
 
     def _view_setter(self, mode: str):
         """切显示口径：写进程内环境变量即刻生效，画法真变了才重推一屏
-        （屏显签名含此开关，数据没变也判定有变化）。顺带清掉条方向
-        覆盖项，保证点完菜单数字与条一定同向。"""
+        （屏显签名含此开关，数据没变也判定有变化）。油表档借条方向
+        覆盖项实现；其余两档清掉覆盖项，保证数字与条一定同向。"""
         def do(_icon, _item):
             before = self._view_state()
-            os.environ["INKSCRY_QUOTA_VIEW"] = mode
-            os.environ.pop("INKSCRY_BAR_FILL", None)
+            if mode == "gauge":
+                os.environ["INKSCRY_QUOTA_VIEW"] = "remaining"
+                os.environ["INKSCRY_BAR_FILL"] = "used"
+            else:
+                os.environ["INKSCRY_QUOTA_VIEW"] = mode
+                os.environ.pop("INKSCRY_BAR_FILL", None)
             if self._view_state() != before:
                 self._force_next = True   # 绕过防抖，立刻见效
                 self._wake.set()
         return do
 
     @staticmethod
-    def _view_checked(mode: str):
-        return lambda _item: mode == ("used" if renderer.quota_view_used()
-                                      else "remaining")
+    def _current_view() -> str:
+        if renderer.quota_view_used():
+            return "used"
+        if renderer.bar_fill_used():   # 条方向被覆盖成「已用」= 油表
+            return "gauge"
+        return "remaining"
+
+    @classmethod
+    def _view_checked(cls, mode: str):
+        return lambda _item: mode == cls._current_view()
 
     # ── 菜单动作 ────────────────────────────────────────────
     def on_refresh(self, _icon, _item) -> None:
