@@ -565,11 +565,19 @@ def _mirasim_bases() -> list[str]:
 
 # Mirasim 0.0.225 起逐步封死本机 HTTP 接口，0.0.227 起 /v1/limits 彻底
 # 下线（hub 变成带令牌的 shell 自动化 API，只有窗口操控 op）。目前仅存的
-# 数据通道是渲染层 WebSocket（ws://{服务端口}/ws，回环无鉴权）：连上后
-# 服务端主动推 relay.usage（5h/7d/7d_fable 三窗口的 usedPercent/resetAt）
-# 与 usage（各 agent 窗口）消息。以下是一个只读极简 WS 客户端。
+# 数据通道是渲染层 WebSocket（ws://{服务端口}/ws）：连上后服务端主动推
+# relay.usage（5h/7d/7d_fable 三窗口的 usedPercent/resetAt）与 usage
+# （各 agent 窗口）消息。0.0.276 起回环访问也要鉴权：服务端每次启动
+# 生成随机 token 写到 ~/.mirasim/run/local-{端口}.token（0600，退出即删），
+# HTTP 用 ?token= / Authorization: Bearer，WS 握手用 ?token=（Mirasim 自家
+# 客户端就是这么连的）；/api/health 免鉴权，探测端口不受影响。
+# 服务端不再在建连时主动发快照（只有 sessions），relay/usage 按约 60s
+# 的节拍广播；但客户端发一条 {"type":"ready"}（Mirasim 自家客户端的开场
+# 握手）服务端会立刻回全量快照（init + relay + usage + …），冷路径因此
+# 仍能秒级拿到数据。以下是一个只读极简 WS 客户端。
 
-_MIRASIM_WS_WAIT = 10.0   # 等 relay.usage 推送的最长秒数（服务端几秒一跳）
+_MIRASIM_WS_WAIT = 10.0   # 等 relay.usage 的最长秒数（ready 后快照 <1s 即到）
+_MIRASIM_WS_HELLO = json.dumps({"type": "ready"})   # 开场握手，换全量快照
 _mirasim_ws_base: str | None = None   # 进程内记住探测成功的服务端口
 
 
@@ -593,14 +601,41 @@ def _mirasim_server_base(base: str) -> str:
     raise OSError("未探测到 Mirasim 本机服务端口（客户端未运行？）")
 
 
-def _ws_texts(url: str, deadline: float):
+def _mirasim_local_token(http_base: str) -> str | None:
+    """本机访问 token：INKSCRY_MIRASIM_TOKEN 显式指定，否则按服务端口读
+    ~/.mirasim/run/local-{端口}.token。token 随服务端每次启动轮换，
+    每次建连前都要重读，不能缓存。"""
+    explicit = os.environ.get("INKSCRY_MIRASIM_TOKEN", "").strip()
+    if explicit:
+        return explicit
+    port = urllib.parse.urlparse(http_base).port
+    if not port:
+        return None
+    try:
+        tok = (Path.home() / ".mirasim" / "run"
+               / f"local-{port}.token").read_text("utf-8").strip()
+    except OSError:
+        return None
+    return tok or None
+
+
+def _mirasim_ws_url(http_base: str) -> str:
+    """http://127.0.0.1:{端口} → ws://127.0.0.1:{端口}/ws[?token=…]。"""
+    url = http_base.replace("http", "ws", 1) + "/ws"
+    tok = _mirasim_local_token(http_base)
+    return f"{url}?token={urllib.parse.quote(tok, safe='')}" if tok else url
+
+
+def _ws_texts(url: str, deadline: float, hello: str | None = None):
     """极简只读 WebSocket 客户端（stdlib 零依赖）：握手后逐帧 yield 文本
-    消息，直到 deadline。ping 自动回 pong（客户端帧按 RFC 带掩码）。"""
+    消息，直到 deadline。ping 自动回 pong（客户端帧按 RFC 带掩码）。
+    hello 非空则握手成功后先发这一条文本帧（如 Mirasim 的 ready）。"""
     u = urllib.parse.urlparse(url)
     sock = socket.create_connection((u.hostname, u.port or 80), timeout=5)
     try:
         key = base64.b64encode(os.urandom(16)).decode()
-        sock.sendall((f"GET {u.path or '/'} HTTP/1.1\r\nHost: {u.netloc}\r\n"
+        target = (u.path or '/') + (f'?{u.query}' if u.query else '')
+        sock.sendall((f"GET {target} HTTP/1.1\r\nHost: {u.netloc}\r\n"
                       "Upgrade: websocket\r\nConnection: Upgrade\r\n"
                       f"Sec-WebSocket-Key: {key}\r\n"
                       "Sec-WebSocket-Version: 13\r\n\r\n").encode())
@@ -643,6 +678,9 @@ def _ws_texts(url: str, deadline: float):
             masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
             sock.sendall(header + mask + masked)
 
+        if hello:
+            send_frame(0x1, hello.encode("utf-8"))
+
         frag = bytearray()
         while time.time() < deadline:
             h = fill(2)
@@ -677,10 +715,9 @@ def _ws_texts(url: str, deadline: float):
 def _mirasim_relay_usage(base: str) -> dict:
     """从渲染层 WS 抓 relay.usage 推送（5h/7d/7d_fable 的 usedPercent
     与 resetAt，服务端实时刷新）。"""
-    http_base = _mirasim_server_base(base)
-    ws_url = http_base.replace("http", "ws", 1) + "/ws"
+    ws_url = _mirasim_ws_url(_mirasim_server_base(base))
     deadline = time.time() + _MIRASIM_WS_WAIT
-    gen = _ws_texts(ws_url, deadline)
+    gen = _ws_texts(ws_url, deadline, hello=_MIRASIM_WS_HELLO)
     try:
         for text in gen:
             try:
@@ -718,7 +755,8 @@ def _windows_to_quota(windows: list) -> CodexQuota:
 
 def query_mirasim_usage(base: str, token: str) -> CodexQuota:
     """Mirasim 桌面客户端：旁听 ws://127.0.0.1:{服务端口}/ws 的
-    relay.usage 推送（0.0.227 起 /v1/limits 已下线，WS 是仅存通道）。
+    relay.usage 推送（0.0.227 起 /v1/limits 已下线，WS 是仅存通道；
+    0.0.276 起握手须带 ~/.mirasim/run 下的本机 token）。
 
     推送制通道与轮询不合拍（relay 数据 ≤60s 一跳，冷连接可能等不到），
     常驻进程应改用 start_mirasim_listener() 长连落缓存；本函数作为
@@ -803,6 +841,7 @@ def _codex_usage_to_quota(entry: dict) -> CodexQuota | None:
 
 
 def _mirasim_listen_loop() -> None:
+    warned: str | None = None   # 同一条握手拒绝原因只告警一次
     while True:
         try:
             base = _mirasim_server_base("auto")
@@ -812,14 +851,24 @@ def _mirasim_listen_loop() -> None:
         try:
             _mirasim_listen_once(base)
         except Exception as e:
+            if "握手被拒绝" in str(e):
+                # 401 等：token 文件缺失/过期或版本又改鉴权。每 5s 重试
+                # 只会刷爆对方 server.log，改 60s 退避
+                if str(e) != warned:
+                    log.warning("Mirasim WS %s（本机 token 缺失或不匹配？"
+                                "60s 后重试）", e)
+                    warned = str(e)
+                time.sleep(60)
+                continue
             log.debug("Mirasim WS 断开，5s 后重连: %s", e)
             time.sleep(5)
 
 
 def _mirasim_listen_once(base: str) -> None:
-    ws_url = base.replace("http", "ws", 1) + "/ws"
+    ws_url = _mirasim_ws_url(base)   # 每次建连重读 token（随服务端轮换）
     last_mirasim: tuple | None = None
-    for text in _ws_texts(ws_url, time.time() + 7 * 86400):
+    for text in _ws_texts(ws_url, time.time() + 7 * 86400,
+                          hello=_MIRASIM_WS_HELLO):
         try:
             msg = json.loads(text)
         except ValueError:

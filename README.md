@@ -144,7 +144,7 @@ NEWAPI → SUB2API，可用 `INKSCRY_PANEL_ORDER=KIMI,GLM,CODEX` 自定义
 | DEEPSEEK | `deepseek.com` | `api.deepseek.com/user/balance`（余额模式） |
 | NEWAPI | 无（自建，必须配 BASE） | `{base}/api/user/self`（余额模式） |
 | SUB2API | 无（自建，必须配 BASE） | `{base}/v1/usage`（余额模式，sk- key） |
-| MIRASIM | 本机 `~/.mirasim`（桌面客户端） | `127.0.0.1:{hub}/v1/limits`（本机无鉴权，端口自动探测） |
+| MIRASIM | 本机 `~/.mirasim`（桌面客户端） | `ws://127.0.0.1:{服务端口}/ws`（端口自动探测，本机 token 自动读取） |
 
 DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模式**，
 与额度面板同构三段式：`bal ¥xx.xx` 金额行（超宽自动缩号不截断）、
@@ -170,13 +170,19 @@ DeepSeek/NewAPI/Sub2API 是余额制（无订阅窗口），面板走**余额模
 - Sub2API：Token 是面板里创建的 **sk- API key**（长期有效，非登录 JWT）；
   走 `/v1/usage`（对齐 cc-switch），返回余额 + 每日消耗，备注行显示
   最近一天的花费「MM-DD $x」
-- Mirasim：桌面客户端的**本机接口**（127.0.0.1，无鉴权无 token）。
+- Mirasim：桌面客户端的**本机接口**（127.0.0.1，无需配任何凭据）。
   0.0.227 起旧的 `GET /v1/limits` 已下线，现走渲染层 WebSocket
   （`ws://{服务端口}/ws`）：服务端主动推 `relay.usage`（5h/7d/7d_fable
-  的 usedPercent/resetAt，≤60s 一跳）。推送制与轮询不合拍，故菜单栏/
+  的 usedPercent/resetAt，≤60s 一跳）。0.0.276 起回环访问也要鉴权：
+  服务端每次启动生成随机 token 写在 `~/.mirasim/run/local-{端口}.token`
+  （退出即删），InkScry 每次建连自动读它挂到 `?token=` 上，无需人工
+  配置（`INKSCRY_MIRASIM_TOKEN` 可显式覆盖）；token 不对时监听线程
+  60s 退避重试并告警一次，不会刷爆 Mirasim 日志。建连后先发一条
+  `{"type":"ready"}`（Mirasim 自家客户端的开场握手），服务端立刻回
+  全量快照，否则只能等约 60s 一跳的广播。推送制与轮询不合拍，故菜单栏/
   托盘程序内置**长连监听线程**，把每跳推送实时写进本地额度缓存，
-  同步轮只读缓存；无常驻进程时退回冷连接等一跳（约 10 秒，等不到
-  则用过期缓存）。服务端口随进程启动漂移：自动枚举 Mirasim 进程的
+  同步轮只读缓存；无常驻进程时退回冷连接拿快照（正常 <1 秒，最多等
+  10 秒，等不到则用过期缓存）。服务端口随进程启动漂移：自动枚举 Mirasim 进程的
   回环监听端口，探测 `/api/health` 报 `name=mirasim` 的才是；
   `INKSCRY_MIRASIM_BASE` 可显式固定。WS 客户端为零依赖 stdlib
   手写（握手/分帧/ping-pong）。账号带档位子额度（如 `7d_fable`，
